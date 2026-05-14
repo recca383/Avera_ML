@@ -1,0 +1,34 @@
+# ── Web framework ─────────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17      # Required for FastAPI form support (transitive)
+
+# ── Pydantic / settings ───────────────────────────────────────────────────────
+pydantic==2.10.2
+pydantic-settings==2.6.1
+
+# ── Azure Blob Storage ────────────────────────────────────────────────────────
+azure-storage-blob==12.23.1
+azure-core==1.32.0
+
+# ── ML / Deep learning ────────────────────────────────────────────────────────
+# CPU-only torch — avoids the massive CUDA wheel (~2.5 GB).
+# If your Azure Container Apps environment has a GPU-enabled node pool,
+# replace these two lines with the appropriate CUDA wheel index:
+#   --index-url https://download.pytorch.org/whl/cu121
+#   torch==2.5.1+cu121
+torch==2.5.1+cpu ; sys_platform != "darwin"
+torch==2.5.1 ; sys_platform == "darwin"
+torchvision==0.20.1+cpu ; sys_platform != "darwin"
+torchvision==0.20.1 ; sys_platform == "darwin"
+
+# ── Image processing ──────────────────────────────────────────────────────────
+Pillow==11.0.0
+opencv-python-headless==4.10.0.84   # headless: no GUI dependencies (fits Docker slim)
+numpy==2.1.3
+
+# ── Structured logging ────────────────────────────────────────────────────────
+structlog==24.4.0
+
+# ── HTTP client (used internally by Azure SDK) ────────────────────────────────
+aiohttp==3.11.7

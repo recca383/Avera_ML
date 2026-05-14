@@ -1,0 +1,51 @@
+# docker-compose.yml — local development only
+# Mirrors the Azure Container Apps deployment as closely as possible.
+#
+# Local auth note
+# ---------------
+# DefaultAzureCredential falls through to your `az login` session automatically.
+# Run `az login` before `docker compose up` so the container can reach
+# Azure Storage and Key Vault without a Managed Identity.
+#
+# Usage:
+#   cp .env.example .env          # fill in real values
+#   az login                      # authenticate via Azure CLI
+#   docker compose up --build
+
+version: "3.9"
+
+services:
+  signature-inference:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: signature-inference-service:local
+    container_name: sig-inference-local
+
+    ports:
+      - "8000:8000"
+
+    environment:
+      ENVIRONMENT: development
+      LOG_FORMAT: text
+      LOG_LEVEL: DEBUG
+
+    env_file:
+      - .env   # supplies AZURE_STORAGE_ACCOUNT_URL, AZURE_KEYVAULT_URL, etc.
+
+    volumes:
+      # Mount Azure CLI token cache so DefaultAzureCredential works inside the container.
+      - ${HOME}/.azure:/home/appuser/.azure:ro
+      # Mount model file to avoid rebuilding the image during development.
+      - ./app/ml/exported_model:/app/app/ml/exported_model:ro
+
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+    restart: unless-stopped

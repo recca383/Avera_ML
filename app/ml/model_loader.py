@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 import torch
+from torch import nn
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -32,7 +33,7 @@ logger = get_logger(__name__)
 
 # Global model state — protected by a lock to be safe against parallel startup calls.
 _model_lock = threading.Lock()
-_model: Optional[torch.jit.ScriptModule] = None
+_model: Optional[nn.Module] = None
 _model_device: Optional[torch.device] = None
 
 
@@ -59,14 +60,15 @@ def load_model() -> None:
                 "Ensure the exported model is included in the Docker image."
             )
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Force CPU only due to CUDA version incompatibility
+        device = torch.device("cpu")
 
         logger.info("Loading model", path=str(model_path), device=str(device))
 
         try:
             from app.ml.architecture import SiameseNineNet
 
-            state_dict = torch.load(str(model_path), map_location=device)
+            state_dict = torch.load(str(model_path), map_location="cpu")
             if not isinstance(state_dict, dict):
                 raise RuntimeError(
                     "Model file did not contain a state_dict for SiameseNineNet."
@@ -74,16 +76,29 @@ def load_model() -> None:
 
             model = SiameseNineNet()
             model.load_state_dict(state_dict)
+            
+            # Explicitly move model and all parameters to target device
+            model = model.to(device)
+            
+            # Verify all parameters are on the correct device
+            for name, param in model.named_parameters():
+                if param.device != device:
+                    logger.warning(
+                        "Parameter not on target device after .to()",
+                        param_name=name,
+                        expected_device=str(device),
+                        actual_device=str(param.device),
+                    )
+                    
         except Exception as fallback_exc:
             logger.error("Failed to load state_dict model", error=str(fallback_exc))
             raise RuntimeError(
-                "Model loading failed: unable to load TorchScript or state_dict model. "
+                "Model loading failed: unable to load state_dict model. "
                 f"Details: {fallback_exc}"
             ) from fallback_exc
         
 
         model.eval()
-        model = model.to(device)
 
         _model = model
         _model_device = device
@@ -95,7 +110,7 @@ def load_model() -> None:
         )
 
 
-def get_model() -> torch.jit.ScriptModule:
+def get_model() -> torch.nn.Module:
     """
     Return the loaded model.
     Raises RuntimeError if called before load_model() has completed.

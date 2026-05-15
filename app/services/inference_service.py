@@ -68,8 +68,23 @@ class InferenceService:
         device = get_model_device()
         threshold = self._settings.INFERENCE_THRESHOLD
 
-        reference_tensors = reference_tensors.to(device)
-        questioned_tensor = questioned_tensor.to(device)
+        # Debug: check actual device of model parameters
+        first_param = next(model.parameters())
+        actual_param_device = first_param.device
+        model_dtype = first_param.dtype
+        
+        # Log device mismatch if detected
+        if actual_param_device != device:
+            logger.warning(
+                "Model parameter device mismatch",
+                expected_device=str(device),
+                actual_param_device=str(actual_param_device),
+                tensor_device=str(reference_tensors.device),
+            )
+        
+        # Ensure tensors are on the correct device AND the actual model parameter device
+        reference_tensors = reference_tensors.to(device=actual_param_device, dtype=model_dtype)
+        questioned_tensor = questioned_tensor.to(device=actual_param_device, dtype=model_dtype)
 
         with torch.inference_mode():
             # ── Embed all reference images ───────────────────────────────────

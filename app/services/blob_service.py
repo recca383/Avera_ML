@@ -22,6 +22,7 @@ from typing import Optional
 
 from azure.core.exceptions import ResourceNotFoundError, AzureError
 from azure.identity.aio import DefaultAzureCredential
+from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import BlobServiceClient
 
 from app.core.config import get_settings
@@ -118,7 +119,7 @@ class BlobStorageService:
                 io.BytesIO(data),
                 blob_type="BlockBlob",
                 overwrite=overwrite,
-                content_settings={"content_type": content_type},
+                content_settings=ContentSettings(content_type=content_type),
             )
             logger.info(
                 "Uploaded blob",

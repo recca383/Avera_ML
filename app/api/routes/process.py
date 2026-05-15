@@ -81,9 +81,9 @@ async def process(
     # ── Step 1: Download images concurrently ─────────────────────────────────
     try:
         download_tasks = [
-            blob_svc.download_blob(blob_id)
+            blob_svc.download_blob(f"{request.case_name}/{blob_id}")
             for blob_id in request.reference_image_ids
-        ] + [blob_svc.download_blob(request.questioned_image_id)]
+        ] + [blob_svc.download_blob(f"{request.case_name}/{request.questioned_image_id}")]
 
         all_bytes: List[bytes] = await asyncio.gather(*download_tasks)
 
@@ -122,12 +122,12 @@ async def process(
             detail=f"Image preprocessing failed: {exc}",
         ) from exc
 
-    # ── Steps 3 + 4: Inference & Grad-CAM (run concurrently) ─────────────────
+    # ── Steps 3 + 4: Inference & Grad-CAM (sequential to avoid model state race) ───────
     try:
-        inference_result, gradcam_result = await asyncio.gather(
-            inference_svc.verify(reference_tensors, questioned_tensor),
-            gradcam_svc.generate(questioned_tensor, questioned_pil, request.case_name),
-        )
+        # Run inference first (inference_mode, no gradients needed)
+        inference_result = await inference_svc.verify(reference_tensors, questioned_tensor)
+        # Then run Grad-CAM (requires train mode and gradients enabled)
+        gradcam_result = await gradcam_svc.generate(questioned_tensor, questioned_pil, request.case_name)
     except Exception as exc:
         logger.exception(
             "Inference or Grad-CAM generation failed",
@@ -147,7 +147,7 @@ async def process(
     # ── Step 5: Upload Grad-CAM image ─────────────────────────────────────────
     try:
         await blob_svc.upload_blob(
-            blob_id=gradcam_blob_id,
+            blob_id=f"{request.case_name}/{gradcam_blob_id}",
             data=gradcam_png_bytes,
             content_type="image/png",
         )

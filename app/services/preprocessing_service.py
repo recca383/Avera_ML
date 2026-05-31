@@ -18,7 +18,7 @@ from typing import List
 
 import numpy as np
 import torch
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
@@ -40,10 +40,9 @@ class PreprocessingService:
             self._settings.MODEL_INPUT_SIZE,
         )
 
-        # ImageNet-style normalisation constants (single channel replicated).
-        # Replace with your actual training statistics if they differ.
-        self._mean = 0.485
-        self._std = 0.229
+        # Match the P2 training pipeline: grayscale images normalised to 0.5/0.5.
+        self._mean = 0.5
+        self._std = 0.5
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -60,6 +59,7 @@ class PreprocessingService:
         torch.Tensor  shape (1, 1, H, W), dtype=float32, values in [0, 1] normalised.
         """
         pil_image = self._load_pil_image(image_bytes)
+        pil_image = self._clean_border(pil_image)
         pil_image = self._resize_and_pad(pil_image)
         tensor = self._to_tensor(pil_image)               # (1, H, W)
         tensor = self._normalise(tensor)
@@ -77,7 +77,9 @@ class PreprocessingService:
     def bytes_to_pil(self, image_bytes: bytes) -> Image.Image:
         """Return a PIL Image (RGB) for Grad-CAM overlay generation."""
         img = self._load_pil_image(image_bytes)
-        return img.convert("RGB").resize(self._target_size, Image.LANCZOS)
+        img = self._clean_border(img)
+        img = self._resize_and_pad(img)
+        return img.convert("RGB")
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
@@ -88,14 +90,48 @@ class PreprocessingService:
         except Exception as exc:
             raise ValueError(f"Cannot decode image bytes: {exc}") from exc
 
+    def _clean_border(self, img: Image.Image, border: int = 4) -> Image.Image:
+        """Remove scanner/edge artefacts by whitening the image border."""
+        img = img.convert("L")
+        img_np = np.array(img)
+        img_np[:border, :] = 255
+        img_np[-border:, :] = 255
+        img_np[:, :border] = 255
+        img_np[:, -border:] = 255
+        return Image.fromarray(img_np)
+
     def _resize_and_pad(self, img: Image.Image) -> Image.Image:
         """
-        Convert to greyscale, resize to target size with aspect-ratio-preserving
-        padding (letterbox) to avoid distortion.
+        Resize the image with aspect ratio preserved and add a white pad.
+
+        This mirrors the notebook pipeline: the longest side is scaled to the
+        target size, the image is centered on a white square canvas, and the
+        paste boundary is softened with a small Gaussian blur mask so the CNN
+        does not learn a hard white border edge.
         """
-        img = img.convert("L")  # greyscale
-        img = ImageOps.pad(img, self._target_size, color=255)  # white padding
-        return img
+        img = img.convert("L")
+        w, h = img.size
+        scale = self._settings.MODEL_INPUT_SIZE / max(w, h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        canvas = Image.new("L", self._target_size, 255)
+        paste_x = (self._target_size[0] - new_w) // 2
+        paste_y = (self._target_size[1] - new_h) // 2
+        canvas.paste(img, (paste_x, paste_y))
+
+        mask = Image.new("L", self._target_size, 255)
+        interior = Image.new("L", (new_w, new_h), 0)
+        mask.paste(interior, (paste_x, paste_y))
+        mask = mask.filter(ImageFilter.GaussianBlur(radius=3))
+
+        white = Image.new("L", self._target_size, 255)
+        result = Image.composite(
+            canvas,
+            white,
+            Image.fromarray(255 - np.array(mask)),
+        )
+        return result
 
     @staticmethod
     def _to_tensor(img: Image.Image) -> torch.Tensor:

@@ -63,9 +63,9 @@ class ProcessRequest(BaseModel):
 
     model_config = {"json_schema_extra": {
         "example": {
-            "case_name": "Case 001",
-            "reference_image_ids": ["ref1.png", "ref2.png", "ref3.png", "ref4.png"],
-            "questioned_image_id": "questioned.png",
-            "output_blob_name": "gradcam-output/case-001.png",
+            "case_name": "Case-0001",
+            "reference_image_ids": ["G1.png", "G2.png", "G3.png", "G4.png"],
+            "questioned_image_id": "F1.png",
+            "output_blob_name": "output.json",
         }
     }}

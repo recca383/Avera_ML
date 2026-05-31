@@ -29,33 +29,21 @@ logger = get_logger(__name__)
 
 
 async def load_secrets_from_keyvault() -> None:
-    """
-    Fetch secrets from Key Vault and write them into the cached Settings object.
-    Must be called during FastAPI lifespan startup, before any request is served.
-
-    Currently managed secrets
-    -------------------------
-    - INTERNAL_API_KEY  ← Key Vault secret named by settings.KV_SECRET_INTERNAL_API_KEY
-      Used by security.py to validate the X-Internal-Api-Key header from the .NET API.
-
-    Add additional secrets to the mapping dict below as the service grows.
-    """
     settings = get_settings()
 
     if not settings.AZURE_KEYVAULT_URL:
-        logger.info(
-            "AZURE_KEYVAULT_URL not set — skipping Key Vault secret loading. "
-            "Ensure all required secrets are supplied via environment variables."
-        )
+        logger.info("AZURE_KEYVAULT_URL not set — skipping Key Vault secret loading.")
         return
 
-    logger.info("Loading secrets from Key Vault", keyvault_url=settings.AZURE_KEYVAULT_URL)
+    vault_url = settings.AZURE_KEYVAULT_URL.rstrip("/")  # normalise
 
-    credential = DefaultAzureCredential()
-    client = SecretClient(vault_url=settings.AZURE_KEYVAULT_URL, credential=credential)
+    logger.info("Loading secrets from Key Vault", keyvault_url=vault_url)
 
-    logger.info("Log in to Azure Key Vault successful, fetching secrets")
-    # Map: Settings field name → Key Vault secret name
+    credential = DefaultAzureCredential(
+         exclude_managed_identity_credential=True
+    )
+    client = SecretClient(vault_url=vault_url, credential=credential)
+
     secret_map: dict[str, str] = {
         "INTERNAL_API_KEY": settings.KV_SECRET_INTERNAL_API_KEY,
     }
@@ -63,33 +51,35 @@ async def load_secrets_from_keyvault() -> None:
     try:
         for setting_field, kv_secret_name in secret_map.items():
             if not kv_secret_name:
+                logger.warning("Secret name is empty", field=setting_field)
                 continue
+
+            # Log the exact name being requested — catches case/underscore mismatches
+            logger.info(
+                "Requesting secret",
+                field=setting_field,
+                kv_secret_name=kv_secret_name,
+                vault_url=vault_url,
+            )
+
             try:
                 secret = await client.get_secret(kv_secret_name)
-                # Directly mutate the cached Settings instance.
-                # pydantic-settings models are not frozen, so this is safe.
                 object.__setattr__(settings, setting_field, secret.value or "")
-                logger.info(
-                    "Loaded secret from Key Vault",
-                    field=setting_field,
-                    kv_secret=kv_secret_name,
-                )
-            except ResourceNotFoundError:
+                logger.info("Loaded secret", field=setting_field, kv_secret=kv_secret_name)
+            except ResourceNotFoundError as exc:
                 logger.warning(
-                    "Key Vault secret not found — field will use its default/env value",
-                    kv_secret=kv_secret_name,
-                    field=setting_field,
+                    "Secret not found — verify the name exists in the vault "
+                    "and the Managed Identity has 'Key Vault Secrets User' at vault scope",
+                    kv_secret_name=kv_secret_name,
+                    vault_url=vault_url,
+                    error=str(exc),   # SDK message often includes the attempted URL
                 )
             except AzureError as exc:
-                # Log and continue — a missing optional secret should not crash startup.
                 logger.error(
-                    "Failed to retrieve Key Vault secret",
-                    kv_secret=kv_secret_name,
-                    field=setting_field,
+                    "Failed to retrieve secret",
+                    kv_secret_name=kv_secret_name,
                     error=str(exc),
                 )
     finally:
         await client.close()
         await credential.close()
-
-    logger.info("Key Vault secret loading complete")

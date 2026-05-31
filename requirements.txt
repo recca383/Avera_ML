@@ -10,7 +10,8 @@ pydantic-settings==2.6.1
 # ── Azure Blob Storage ────────────────────────────────────────────────────────
 azure-storage-blob==12.23.1
 azure-core==1.32.0
-
+azure-identity==1.15.0
+azure-keyvault-secrets==4.9.0
 # ── ML / Deep learning ────────────────────────────────────────────────────────
 # CPU-only torch — avoids the massive CUDA wheel (~2.5 GB).
 # If your Azure Container Apps environment has a GPU-enabled node pool,

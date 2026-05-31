@@ -5,6 +5,7 @@
 FROM python:3.11-slim AS builder
 
 # System build dependencies (only needed to compile certain C-extension wheels)
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libglib2.0-0 \
@@ -13,6 +14,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
   && rm -rf /var/lib/apt/lists/*
 
+  # Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    apt-transport-https \
+    ca-certificates \
+    gnupg
+
+# Install Azure CLI
+RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 WORKDIR /build
 
 # Copy only requirements first to exploit Docker layer cache:

@@ -4,8 +4,8 @@ Orchestrates the complete signature verification pipeline:
   1. Download images from Azure Blob Storage
   2. Preprocess images into tensors
   3. Run Siamese network inference
-  4. Generate Grad-CAM heatmap
-  5. Upload Grad-CAM image to Azure Blob Storage
+  4. Generate Grad-CAM coordinate JSON
+  5. Upload Grad-CAM JSON to Azure Blob Storage as V1.json
   6. Return structured verification result
 
 Error handling philosophy
@@ -43,8 +43,8 @@ router = APIRouter()
     summary="Run signature verification pipeline",
     description=(
         "Downloads reference and questioned signature images from Azure Blob Storage, "
-        "runs Siamese network inference, generates a Grad-CAM heatmap, uploads it back "
-        "to Blob Storage, and returns the verification result."
+        "runs Siamese network inference, generates a Grad-CAM coordinate JSON, uploads it "
+        "back to Blob Storage as V1.json, and returns the verification result."
     ),
     responses={
         400: {"description": "Invalid request — bad blob ID format or empty image data"},
@@ -122,12 +122,15 @@ async def process(
             detail=f"Image preprocessing failed: {exc}",
         ) from exc
 
-    # ── Steps 3 + 4: Inference & Grad-CAM (sequential to avoid model state race) ───────
+    # ── Steps 3 + 4: Inference & Grad-CAM (sequential — avoids model state race) ──
     try:
-        # Run inference first (inference_mode, no gradients needed)
+        # Inference runs first (inference_mode, no gradients required).
         inference_result = await inference_svc.verify(reference_tensors, questioned_tensor)
-        # Then run Grad-CAM (requires train mode and gradients enabled)
-        gradcam_result = await gradcam_svc.generate(questioned_tensor, questioned_pil, request.case_name)
+
+        # Grad-CAM runs after (requires train mode and torch.enable_grad).
+        gradcam_result = await gradcam_svc.generate(
+            questioned_tensor, questioned_pil, request.case_name
+        )
     except Exception as exc:
         logger.exception(
             "Inference or Grad-CAM generation failed",
@@ -140,27 +143,30 @@ async def process(
         ) from exc
 
     verdict, conf_genuine, conf_forged, distance, threshold = inference_result
-    gradcam_png_bytes, gradcam_blob_id = gradcam_result
+    gradcam_json_bytes, gradcam_blob_id = gradcam_result
+
+    # Allow the caller to override the output blob name.
+    # The service always produces V1.json; override only when explicitly requested.
     if request.output_blob_name:
         gradcam_blob_id = request.output_blob_name
 
-    # ── Step 5: Upload Grad-CAM image ─────────────────────────────────────────
+    # ── Step 5: Upload Grad-CAM JSON ──────────────────────────────────────────
     try:
         await blob_svc.upload_blob(
             blob_id=f"{request.case_name}/{gradcam_blob_id}",
-            data=gradcam_png_bytes,
-            content_type="image/png",
+            data=gradcam_json_bytes,
+            content_type="application/json",   # ← JSON, not image/png
         )
     except RuntimeError as exc:
         logger.error(
-            "Grad-CAM upload failed",
+            "Grad-CAM JSON upload failed",
             case_name=request.case_name,
             gradcam_blob_id=gradcam_blob_id,
             error=str(exc),
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to upload Grad-CAM image: {exc}",
+            detail=f"Failed to upload Grad-CAM JSON: {exc}",
         ) from exc
 
     logger.info(
@@ -190,10 +196,14 @@ def _preprocess_all(
     questioned_bytes: bytes,
 ):
     """
-    Preprocess all images in a single thread-pool task to reduce context-switch overhead.
-    Returns (reference_tensors, questioned_tensor, questioned_pil).
+    Preprocess all images in a single thread-pool task to reduce
+    context-switch overhead.
+
+    Returns
+    -------
+    (reference_tensors, questioned_tensor, questioned_pil)
     """
-    import torch
+    import torch  # noqa: F401 — kept for clarity; already imported by svc
 
     reference_tensors = svc.preprocess_batch(reference_bytes_list)
     questioned_tensor = svc.preprocess_image_bytes(questioned_bytes)

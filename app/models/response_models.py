@@ -4,7 +4,7 @@ All numeric fields are rounded at the serialization boundary so callers
 receive consistent precision without surprises.
 """
 
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,7 @@ class ProcessResponse(BaseModel):
     confidence_forged   : Probability (0–100) that the signature is forged.
     distance            : Raw embedding distance produced by the Siamese network.
     threshold           : Distance threshold used for this inference run.
-    gradcam_blob_id     : Blob ID of the uploaded Grad-CAM visualization image.
+    gradcam_blob_ids    : Blob IDs of the uploaded Grad-CAM visualization images.
     """
 
     case_name: str = Field(..., description="Case identifier echoed from the request.")
@@ -40,8 +40,8 @@ class ProcessResponse(BaseModel):
     threshold: float = Field(
         ..., ge=0.0, description="Decision threshold applied during this inference."
     )
-    gradcam_blob_id: str = Field(
-        ..., description="Blob ID of the Grad-CAM heatmap image uploaded to Azure Blob Storage."
+    gradcam_blob_ids: List[str] = Field(
+        ..., description="Blob IDs of the Grad-CAM visualization images uploaded to Azure Blob Storage."
     )
 
     model_config = {"json_schema_extra": {
@@ -52,7 +52,7 @@ class ProcessResponse(BaseModel):
             "confidence_forged": 5.75,
             "distance": 0.214562,
             "threshold": 0.485123,
-            "gradcam_blob_id": "gradcam-output-abc123.png",
+            "gradcam_blob_ids": ["gradcam-output/case-001/query_case-001_original.png"],
         }
     }}
 

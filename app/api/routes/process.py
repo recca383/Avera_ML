@@ -4,8 +4,8 @@ Orchestrates the complete signature verification pipeline:
   1. Download images from Azure Blob Storage
   2. Preprocess images into tensors
   3. Run Siamese network inference
-  4. Generate Grad-CAM coordinate JSON
-  5. Upload Grad-CAM JSON to Azure Blob Storage as V1.json
+  4. Generate Grad-CAM visualization images
+  5. Upload the visualization images to Azure Blob Storage
   6. Return structured verification result
 
 Error handling philosophy
@@ -20,6 +20,7 @@ Error handling philosophy
 import asyncio
 from typing import Annotated, List
 
+import torch
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.logging import get_logger
@@ -43,8 +44,8 @@ router = APIRouter()
     summary="Run signature verification pipeline",
     description=(
         "Downloads reference and questioned signature images from Azure Blob Storage, "
-        "runs Siamese network inference, generates a Grad-CAM coordinate JSON, uploads it "
-        "back to Blob Storage as V1.json, and returns the verification result."
+        "runs Siamese network inference, generates separate Grad-CAM PNG visualizations, "
+        "uploads them back to Blob Storage, and returns the verification result."
     ),
     responses={
         400: {"description": "Invalid request — bad blob ID format or empty image data"},
@@ -110,7 +111,7 @@ async def process(
 
     # ── Step 2: Preprocess images ─────────────────────────────────────────────
     try:
-        reference_tensors, questioned_tensor, questioned_pil = await asyncio.to_thread(
+        reference_tensors, questioned_tensor, questioned_pil, reference_pils = await asyncio.to_thread(
             _preprocess_all,
             preprocessing_svc,
             reference_bytes_list,
@@ -126,10 +127,21 @@ async def process(
     try:
         # Inference runs first (inference_mode, no gradients required).
         inference_result = await inference_svc.verify(reference_tensors, questioned_tensor)
+        verdict, conf_genuine, conf_forged, distance, threshold = inference_result
 
         # Grad-CAM runs after (requires train mode and torch.enable_grad).
-        gradcam_result = await gradcam_svc.generate(
-            questioned_tensor, questioned_pil, request.case_name
+        gradcam_blob_ids = await gradcam_svc.generate(
+            questioned_tensor,
+            questioned_pil,
+            request.case_name,
+            reference_image_ids=request.reference_image_ids,
+            questioned_image_id=request.questioned_image_id,
+            reference_tensors=[t.unsqueeze(0) for t in reference_tensors.unbind(0)] if isinstance(reference_tensors, torch.Tensor) else [],
+            reference_pil_images=reference_pils,
+            verdict=verdict,
+            avg_distance=distance,
+            threshold=threshold,
+            blob_svc=blob_svc
         )
     except Exception as exc:
         logger.exception(
@@ -142,39 +154,18 @@ async def process(
             detail="An error occurred during inference. Please try again.",
         ) from exc
 
-    verdict, conf_genuine, conf_forged, distance, threshold = inference_result
-    gradcam_json_bytes, gradcam_blob_id = gradcam_result
-
-    # Allow the caller to override the output blob name.
-    # The service always produces V1.json; override only when explicitly requested.
-    if request.output_blob_name:
-        gradcam_blob_id = request.output_blob_name
-
-    # ── Step 5: Upload Grad-CAM JSON ──────────────────────────────────────────
-    try:
-        await blob_svc.upload_blob(
-            blob_id=f"{request.case_name}/{gradcam_blob_id}",
-            data=gradcam_json_bytes,
-            content_type="application/json",   # ← JSON, not image/png
-        )
-    except RuntimeError as exc:
-        logger.error(
-            "Grad-CAM JSON upload failed",
-            case_name=request.case_name,
-            gradcam_blob_id=gradcam_blob_id,
-            error=str(exc),
-        )
+    if not gradcam_blob_ids:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to upload Grad-CAM JSON: {exc}",
-        ) from exc
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Grad-CAM visualization generation did not produce any output files.",
+        )
 
     logger.info(
         "Verification pipeline completed",
         case_name=request.case_name,
         verdict=verdict,
         distance=round(distance, 6),
-        gradcam_blob_id=gradcam_blob_id,
+        gradcam_blob_ids=gradcam_blob_ids,
     )
 
     return ProcessResponse(
@@ -184,7 +175,7 @@ async def process(
         confidence_forged=conf_forged,
         distance=distance,
         threshold=threshold,
-        gradcam_blob_id=gradcam_blob_id,
+        gradcam_blob_ids=gradcam_blob_ids,
     )
 
 
@@ -201,11 +192,12 @@ def _preprocess_all(
 
     Returns
     -------
-    (reference_tensors, questioned_tensor, questioned_pil)
+    (reference_tensors, questioned_tensor, questioned_pil, reference_pils)
     """
     import torch  # noqa: F401 — kept for clarity; already imported by svc
 
     reference_tensors = svc.preprocess_batch(reference_bytes_list)
     questioned_tensor = svc.preprocess_image_bytes(questioned_bytes)
     questioned_pil = svc.bytes_to_pil(questioned_bytes)
-    return reference_tensors, questioned_tensor, questioned_pil
+    reference_pils = [svc.bytes_to_pil(image_bytes) for image_bytes in reference_bytes_list]
+    return reference_tensors, questioned_tensor, questioned_pil, reference_pils

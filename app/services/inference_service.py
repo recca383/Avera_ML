@@ -17,7 +17,7 @@ post-processing for your architecture.
 """
 
 import asyncio
-from typing import List, Tuple
+from typing import List, Literal, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -45,7 +45,7 @@ class InferenceService:
         self,
         reference_tensors: torch.Tensor,   # (N, 1, H, W)
         questioned_tensor: torch.Tensor,   # (1, 1, H, W)
-    ) -> Tuple[str, float, float, float, float]:
+    ) -> Tuple[Literal["GENUINE", "FORGED"], float, float, float, float]:
         """
         Run verification asynchronously.
 
@@ -63,7 +63,7 @@ class InferenceService:
         self,
         reference_tensors: torch.Tensor,
         questioned_tensor: torch.Tensor,
-    ) -> Tuple[str, float, float, float, float]:
+    ) -> Tuple[Literal["GENUINE", "FORGED"], float, float, float, float]:
         model = get_model()
         device = get_model_device()
         threshold = self._settings.INFERENCE_THRESHOLD
@@ -130,7 +130,7 @@ class InferenceService:
     def _classify(
         distance: float,
         threshold: float,
-    ) -> Tuple[str, float, float]:
+    ) -> Tuple[Literal["GENUINE", "FORGED"], float, float]:
         """
         Convert distance to verdict and confidence percentages.
 

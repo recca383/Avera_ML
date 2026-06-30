@@ -155,10 +155,13 @@ async def process(
         ) from exc
 
     if not gradcam_blob_ids:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Grad-CAM visualization generation did not produce any output files.",
+        logger.warning(
+            "Grad-CAM did not produce output files",
+            case_name=request.case_name,
         )
+        # Don't fail — return verdict with empty image list
+        # (user can check local temp folder: C:\Users\<YourUsername>\AppData\Local\Temp\gradcam-exports\)
+        gradcam_blob_ids = []
 
     logger.info(
         "Verification pipeline completed",

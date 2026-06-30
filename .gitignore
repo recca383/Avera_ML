@@ -1,3 +1,12 @@
 .env
+.venv/
 **/__pycache__/**
 app/api/routes/__pycache__/process.cpython-314.pyc
+
+# Local scratch/analysis scripts
+run_local_gradcam.py
+avera_p2.py
+inspect_model.py
+
+# Local testing folder
+test/

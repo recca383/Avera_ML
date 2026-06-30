@@ -40,11 +40,6 @@ class ProcessRequest(BaseModel):
         examples=["questioned.png"],
         description="Blob ID for the questioned signature image.",
     )
-    output_blob_name: str | None = Field(
-        None,
-        examples=["gradcam-output/case-001.png"],
-        description="Optional blob ID where the Grad-CAM result image should be uploaded.",
-    )
 
     @field_validator("reference_image_ids", mode="before")
     @classmethod
@@ -56,16 +51,10 @@ class ProcessRequest(BaseModel):
     def validate_questioned_id(cls, v: str) -> str:
         return validate_blob_id(v)
 
-    @field_validator("output_blob_name", mode="before")
-    @classmethod
-    def validate_output_blob_name(cls, v: str | None) -> str | None:
-        return validate_blob_id(v) if v is not None else None
-
     model_config = {"json_schema_extra": {
         "example": {
-            "case_name": "Case-0001",
+            "case_name": "CASE-05232026-001",
             "reference_image_ids": ["G1.png", "G2.png", "G3.png", "G4.png"],
-            "questioned_image_id": "F1.png",
-            "output_blob_name": "output.json",
-        }
+            "questioned_image_id": "F1.png"
+           }
     }}

@@ -50,6 +50,13 @@ class BlobStorageService:
         settings = get_settings()
         self._container = settings.AZURE_STORAGE_CONTAINER
 
+        if not settings.AZURE_STORAGE_ACCOUNT_URL:
+            logger.warning(
+                "Azure Blob Storage account URL is not configured; blob operations will fail until it is set",
+                container=self._container,
+            )
+            return
+
         # DefaultAzureCredential is constructed once and reused.
         # It holds a token cache and handles transparent token refresh.
         self._credential = DefaultAzureCredential()
@@ -134,6 +141,12 @@ class BlobStorageService:
             raise RuntimeError(f"Failed to upload blob '{blob_id}': {exc}") from exc
 
     def _assert_ready(self) -> None:
+        settings = get_settings()
+        if not settings.AZURE_STORAGE_ACCOUNT_URL:
+            raise RuntimeError(
+                "Azure Blob Storage is not configured. Set AZURE_STORAGE_ACCOUNT_URL and "
+                "AZURE_STORAGE_CONTAINER before attempting blob operations."
+            )
         if self._client is None:
             raise RuntimeError(
                 "BlobStorageService has not been initialised. "

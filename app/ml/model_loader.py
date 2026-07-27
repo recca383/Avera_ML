@@ -68,7 +68,11 @@ def load_model() -> None:
         try:
             from app.ml.architecture import SiameseNineNet
 
-            state_dict = torch.load(str(model_path), map_location="cpu")
+            try:
+                state_dict = torch.load(str(model_path), map_location="cpu", weights_only=True)
+            except TypeError:
+                state_dict = torch.load(str(model_path), map_location="cpu")
+
             if not isinstance(state_dict, dict):
                 raise RuntimeError(
                     "Model file did not contain a state_dict for SiameseNineNet."

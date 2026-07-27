@@ -40,8 +40,10 @@ class Settings(BaseSettings):
     # Format: https://<storage-account-name>.blob.core.windows.net
     # The Container App Managed Identity must be granted the role:
     #   "Storage Blob Data Contributor"  on the storage account (or container).
-    AZURE_STORAGE_ACCOUNT_URL: str    # e.g. https://sigstorage.blob.core.windows.net
-    AZURE_STORAGE_CONTAINER: str      # e.g. signatures
+    # Leave these empty for local-only development; the service will still start
+    # and report a clear error when a blob operation is attempted without Azure config.
+    AZURE_STORAGE_ACCOUNT_URL: str = ""
+    AZURE_STORAGE_CONTAINER: str = ""
 
     # ── Azure Key Vault — Managed Identity auth ─────────────────────────────────
     # When set, secrets are fetched from Key Vault at startup via Managed Identity.
@@ -80,6 +82,15 @@ class Settings(BaseSettings):
         allowed = {"development", "staging", "production"}
         if v not in allowed:
             raise ValueError(f"ENVIRONMENT must be one of {allowed}")
+        return v
+
+    @field_validator("AZURE_STORAGE_ACCOUNT_URL", "AZURE_STORAGE_CONTAINER")
+    @classmethod
+    def validate_azure_storage_settings(cls, v: str, info) -> str:
+        if not v:
+            return ""
+        if info.field_name == "AZURE_STORAGE_ACCOUNT_URL" and not v.startswith("http"):
+            raise ValueError("AZURE_STORAGE_ACCOUNT_URL must be a valid URL when provided")
         return v
 
     model_config = {

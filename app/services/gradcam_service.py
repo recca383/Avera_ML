@@ -25,7 +25,8 @@ logger = get_logger(__name__)
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 TARGET_LAYER_NAME = "backbone.conv_layers.26"
-TOP_MARKERS = 5
+MIN_MARKERS = 3
+MAX_MARKERS = 9
 
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -99,8 +100,9 @@ def _compute_global_top_markers(
     reference_gray_images: List[np.ndarray],
     query_gray_image: np.ndarray,
     min_score: float = 0.15,
-    max_markers: int = TOP_MARKERS,
-    region: int = 15,
+    min_markers: int = MIN_MARKERS,
+    max_markers: int = MAX_MARKERS,
+    region: int = 12,
 ) -> List[tuple[float, int, int]]:
     skel_query = _get_skeleton(query_gray_image)
     skels_ref = [_get_skeleton(gray_image) for gray_image in reference_gray_images]
@@ -116,29 +118,35 @@ def _compute_global_top_markers(
     kernel = np.ones((region, region), np.float32) / float(region * region)
     density = cv2.filter2D(combined, -1, kernel)
 
-    peak_score = float(density.max())
-    if peak_score <= 0:
+    ys, xs = np.where(combined > 0)
+    if len(ys) == 0:
         return []
 
-    score_threshold = min_score * peak_score
-    results: List[tuple[float, int, int]] = []
-    temp = density.copy()
+    scores = density[ys, xs]
+    peak_score = float(scores.max())
+    order = np.argsort(-scores)
+    candidates: List[tuple[float, int, int]] = []
+    taken = np.zeros((height, width), dtype=bool)
 
-    for _ in range(max_markers):
-        index = int(np.argmax(temp))
-        cy, cx = divmod(index, width)
-        score = float(temp[cy, cx])
-
-        if score < score_threshold:
-            break
-
-        results.append((score, cx, cy))
-
+    for index in order:
+        cy, cx = int(ys[index]), int(xs[index])
+        if taken[cy, cx]:
+            continue
+        score = float(scores[index])
+        candidates.append((score, cx, cy))
         y1, y2 = max(0, cy - region), min(height, cy + region)
         x1, x2 = max(0, cx - region), min(width, cx + region)
-        temp[y1:y2, x1:x2] = 0
+        taken[y1:y2, x1:x2] = True
+        if len(candidates) >= max_markers:
+            break
 
-    return results
+    score_threshold = min_score * peak_score
+    kept = [candidate for candidate in candidates if candidate[0] >= score_threshold]
+    target_floor = min(min_markers, len(candidates))
+    if len(kept) < target_floor:
+        kept = candidates[:target_floor]
+
+    return sorted(kept[:max_markers], key=lambda candidate: candidate[1])
 
 
 def _generate_bounding_box_visualization(orig_gray_pil: Image.Image) -> np.ndarray:
@@ -196,21 +204,30 @@ def _generate_stroke_difference_visualization(
     dark_red = (30, 30, 180)
     white = (255, 255, 255)
     font = cv2.FONT_HERSHEY_SIMPLEX
-    bubble_radius = 14
-    bubble_dist = int(margin_px * 1.2)
-    num_markers = len(global_top_markers)
-    angle_step = 360 / num_markers if num_markers else 0
+    bubble_radius = 13
+    min_gap = 2 * bubble_radius + 8
+    raw_bubble_x = [cx + margin_px for _score, cx, _cy in global_top_markers]
+    bubble_x = raw_bubble_x.copy()
+    for index in range(1, len(bubble_x)):
+        if bubble_x[index] - bubble_x[index - 1] < min_gap:
+            bubble_x[index] = bubble_x[index - 1] + min_gap
+
+    max_allowed = total_size - bubble_radius - 4
+    if bubble_x and bubble_x[-1] > max_allowed:
+        overflow = bubble_x[-1] - max_allowed
+        bubble_x = [x - overflow for x in bubble_x]
+    min_allowed = bubble_radius + 4
+    if bubble_x and bubble_x[0] < min_allowed:
+        shift = min_allowed - bubble_x[0]
+        bubble_x = [x + shift for x in bubble_x]
+    bubble_y = int(margin_px * 0.42)
 
     for idx, (_score, cx, cy) in enumerate(global_top_markers):
         ex = cx + margin_px
         ey = cy + margin_px
 
-        angle_rad = math.radians(idx * angle_step)
-        bx = int(ex + bubble_dist * math.cos(angle_rad))
-        by = int(ey + bubble_dist * math.sin(angle_rad))
-
-        bx = max(bubble_radius + 4, min(total_size - bubble_radius - 4, bx))
-        by = max(bubble_radius + 4, min(total_size - bubble_radius - 4, by))
+        bx = int(bubble_x[idx])
+        by = bubble_y
 
         cv2.arrowedLine(
             expanded,
@@ -316,6 +333,64 @@ def _apply_jet_colormap(values: np.ndarray) -> np.ndarray:
     return (rgb.reshape(values.shape + (3,)) * 255.0).astype(np.uint8)
 
 
+def _generate_overlay_comparison(ref_pil: Image.Image, query_pil: Image.Image) -> np.ndarray:
+    """Create the notebook's reference/query ink overlay."""
+    ref_gray = np.asarray(ref_pil.convert("L"), dtype=np.uint8)
+    query_gray = np.asarray(query_pil.convert("L"), dtype=np.uint8)
+    _, ref_binary = cv2.threshold(
+        ref_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+    _, query_binary = cv2.threshold(
+        query_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+
+    ref_mask = ref_binary > 0
+    query_mask = query_binary > 0
+    canvas = np.ones((*ref_gray.shape, 3), dtype=np.uint8) * 255
+    canvas[ref_mask & ~query_mask] = [59, 130, 246]
+    canvas[query_mask & ~ref_mask] = [220, 38, 38]
+    canvas[ref_mask & query_mask] = [88, 28, 135]
+    return canvas
+
+
+def _make_visual_report_page(
+    title: str,
+    images: List[Image.Image | np.ndarray],
+    labels: List[str],
+    subtitle: str = "",
+) -> Image.Image:
+    """Build one notebook-style visual report page."""
+    page = Image.new("RGB", (3600, 2400), "white")
+    draw = ImageDraw.Draw(page)
+    title_font = _load_font(52, bold=True)
+    subtitle_font = _load_font(28)
+    label_font = _load_font(25, bold=True)
+
+    draw.text((70, 55), title, fill="#222222", font=title_font)
+    if subtitle:
+        draw.text((70, 125), subtitle, fill="#666666", font=subtitle_font)
+
+    margin_x = 70
+    top = 220
+    gap = 24
+    cell_width = (3600 - (2 * margin_x) - (4 * gap)) // 5
+    cell_height = 1900
+
+    for index in range(min(5, len(images))):
+        image = images[index]
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(np.asarray(image, dtype=np.uint8))
+        image = image.convert("RGB")
+        image.thumbnail((cell_width - 30, cell_height - 90), Image.LANCZOS)
+        x = margin_x + index * (cell_width + gap)
+        draw.text((x, top), labels[index], fill="#222222", font=label_font)
+        image_x = x + (cell_width - image.width) // 2
+        image_y = top + 60 + (cell_height - 60 - image.height) // 2
+        page.paste(image, (image_x, image_y))
+
+    return page
+
+
 def export_individual_visuals(
     ref_images_paths,
     query_image_path,
@@ -348,24 +423,20 @@ def export_individual_visuals(
         blend = blends[i] if i < len(blends) else np.zeros((224, 224, 3), dtype=np.uint8)
         bbox = bboxes[i] if i < len(bboxes) else np.zeros((224, 224, 3), dtype=np.uint8)
         stroke_diff = stroke_diffs[i] if i < len(stroke_diffs) else np.zeros((224, 224, 3), dtype=np.uint8)
+        blend_pil = Image.fromarray(np.asarray(blend, dtype=np.uint8))
 
         orig_filename = os.path.join(export_base_dir, f"{prefix}_{base_name}_original.png")
         orig_pil.save(orig_filename)
         exported_files.append(orig_filename)
 
-        if colormap_func is None:
-            cam_array = np.clip(np.nan_to_num(np.asarray(cam), nan=0.0, posinf=0.0, neginf=0.0), 0.0, 1.0)
-            cam_array = (cam_array * 255).astype(np.uint8)
-            cam_rgb = np.stack([cam_array, cam_array, cam_array], axis=-1)
-        else:
-            cam_rgb = colormap_func(cam)
-
-        cam_pil = Image.fromarray(cam_rgb)
+        # Keep the signature visible in every Grad-CAM export. The raw CAM is
+        # retained for numeric/report processing, while the image artifact uses
+        # the same heatmap-over-signature blend as the notebook.
+        cam_pil = blend_pil
         cam_filename = os.path.join(export_base_dir, f"{prefix}_{base_name}_heatmap.png")
         cam_pil.save(cam_filename)
         exported_files.append(cam_filename)
 
-        blend_pil = Image.fromarray(np.asarray(blend, dtype=np.uint8))
         blend_filename = os.path.join(export_base_dir, f"{prefix}_{base_name}_overlay.png")
         blend_pil.save(blend_filename)
         exported_files.append(blend_filename)
@@ -441,7 +512,7 @@ def export_compiled_pdf(
         if row_idx < len(orig_pils):
             row_images = [
                 orig_pils[row_idx],
-                Image.fromarray(_apply_jet_colormap(cams[row_idx])),
+                Image.fromarray(np.asarray(blends[row_idx], dtype=np.uint8)),
                 Image.fromarray(np.asarray(blends[row_idx], dtype=np.uint8)),
                 Image.fromarray(np.asarray(bboxes[row_idx], dtype=np.uint8)),
                 Image.fromarray(np.asarray(stroke_diffs[row_idx], dtype=np.uint8)),
@@ -470,8 +541,68 @@ def export_compiled_pdf(
             )
         draw.multiline_text((40, y + cell_h - 92), label, fill="black", font=label_font, spacing=4)
 
+    report_pages = [canvas]
+    labels = [
+        "Reference 1",
+        "Reference 2",
+        "Reference 3",
+        "Reference 4",
+        "QUESTIONED",
+    ]
+
+    heatmap_images = [
+        Image.fromarray(np.asarray(blend, dtype=np.uint8))
+        for blend in blends
+    ]
+    report_pages.append(
+        _make_visual_report_page(
+            "Grad-CAM Attention Heatmaps",
+            heatmap_images,
+            labels,
+            "Activation response from the final convolutional feature map",
+        )
+    )
+
+    query_pil = orig_pils[4].convert("RGB") if len(orig_pils) > 4 else Image.new("RGB", (224, 224), "white")
+    overlay_images = [
+        Image.fromarray(_generate_overlay_comparison(orig_pils[index], query_pil))
+        for index in range(min(4, len(orig_pils) - 1))
+    ]
+    while len(overlay_images) < 5:
+        overlay_images.append(Image.new("RGB", (224, 224), "white"))
+    report_pages.append(
+        _make_visual_report_page(
+            "Overlay Comparison",
+            overlay_images,
+            ["Query vs Ref 1", "Query vs Ref 2", "Query vs Ref 3", "Query vs Ref 4", "Legend"],
+            "Blue: reference-only ink | Red: questioned-only ink | Purple: overlap",
+        )
+    )
+
+    report_pages.append(
+        _make_visual_report_page(
+            "Ink Bounding Box",
+            [Image.fromarray(bbox) for bbox in bboxes],
+            labels,
+            "Otsu threshold and connected-component signature extents",
+        )
+    )
+    report_pages.append(
+        _make_visual_report_page(
+            "Forensic Stroke Map",
+            [Image.fromarray(stroke_diff) for stroke_diff in stroke_diffs],
+            labels,
+            "Shared discrepancy markers, ordered left to right",
+        )
+    )
+
     pdf_path = os.path.join(results_dir, "output.pdf")
-    canvas.save(pdf_path, format="PDF")
+    canvas.save(
+        pdf_path,
+        format="PDF",
+        save_all=True,
+        append_images=report_pages[1:],
+    )
 
     png_path = os.path.join(results_dir, "output.png")
     canvas.save(png_path, format="PNG")
@@ -620,7 +751,7 @@ class GradCAMService:
         )
 
         all_orig_pils = [item["orig"] for item in reference_visuals] + [original_pil_image.convert("RGB")]
-        all_cams = [item["cam"] for item in reference_visuals] + [cam_fullres]
+        all_cams = [item["cam"] for item in reference_visuals] + [questioned_cam]
         all_blends = [item["blend"] for item in reference_visuals] + [questioned_blend]
         all_bboxes = [item["bbox"] for item in reference_visuals] + [questioned_bbox]
         all_stroke_diffs = [
@@ -720,17 +851,21 @@ class GradCAMService:
             cam = (weights * acts).sum(dim=1, keepdim=True)
             cam = F.relu(cam)
 
-            target_size = self._settings.MODEL_INPUT_SIZE
-            cam = F.interpolate(cam, size=(target_size, target_size), mode="bilinear", align_corners=False)
             cam_np = cam.squeeze().cpu().numpy()
-
             cam_min, cam_max = cam_np.min(), cam_np.max()
             if cam_max - cam_min > 1e-8:
                 cam_np = (cam_np - cam_min) / (cam_max - cam_min)
             else:
                 cam_np = np.zeros_like(cam_np)
 
-            return cam_np.astype(np.float32)
+            target_size = self._settings.MODEL_INPUT_SIZE
+            cam_fullres = np.array(
+                Image.fromarray((cam_np * 255).astype(np.uint8)).resize(
+                    (target_size, target_size), Image.BILINEAR
+                )
+            ) / 255.0
+
+            return cam_fullres.astype(np.float32)
 
         finally:
             fwd_handle.remove()
@@ -826,7 +961,8 @@ class GradCAMService:
                     blob_id=blob_id,
                     size_bytes=len(data),
                 )
-                await blob_svc.upload_blob(blob_id=blob_id, data=data, content_type="image/png")
+                content_type = "application/pdf" if local_path.lower().endswith(".pdf") else "image/png"
+                await blob_svc.upload_blob(blob_id=blob_id, data=data, content_type=content_type)
                 result_paths.append(blob_id)
                 logger.info("Uploaded blob", blob_id=blob_id)
             except Exception as upload_error:

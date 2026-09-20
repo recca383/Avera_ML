@@ -158,7 +158,9 @@ pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requiremen
 
 # Configure environment
 cp .env.example .env
-# Edit .env: fill in AZURE_STORAGE_CONNECTION_STRING and AZURE_STORAGE_CONTAINER
+# Edit .env: fill in AZURE_STORAGE_ACCOUNT_URL and AZURE_STORAGE_CONTAINER
+# Authenticate locally with Azure CLI
+az login
 ```
 
 ### Run locally
@@ -197,7 +199,7 @@ docker build -t signature-inference-service:latest .
 
 # Run with environment variables
 docker run -p 8000:8000 \
-  -e AZURE_STORAGE_CONNECTION_STRING="<your-connection-string>" \
+  -e AZURE_STORAGE_ACCOUNT_URL="https://<your-account>.blob.core.windows.net" \
   -e AZURE_STORAGE_CONTAINER="signatures" \
   -v $(pwd)/app/ml/exported_model:/app/app/ml/exported_model:ro \
   signature-inference-service:latest

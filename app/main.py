@@ -19,6 +19,8 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+from scalar_fastapi import get_scalar_api_reference
 
 from app.api import api_router
 from app.core.config import get_settings
@@ -88,6 +90,14 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if settings.ENVIRONMENT != "production" else None,
         lifespan=lifespan,
     )
+
+    if settings.ENVIRONMENT != "production":
+        @app.get("/scalar", include_in_schema=False, response_class=HTMLResponse)
+        async def scalar_docs() -> str:
+            return get_scalar_api_reference(
+                openapi_url=app.openapi_url,
+                title=f"{settings.APP_NAME} API Reference",
+            )
 
     # ── Middleware (outermost = first to execute on each request) ─────────────
     app.add_middleware(RequestLoggingMiddleware)

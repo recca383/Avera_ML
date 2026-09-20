@@ -51,14 +51,14 @@ class Backbone(nn.Module):
             nn.MaxPool2d(kernel_size=2),
         )
 
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((6, 6))
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
 
         self.fc_layers = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(9216, 512),
+            nn.Linear(4096, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.5),
-            nn.Linear(512, embedding_dim),
+            nn.Linear(256, embedding_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

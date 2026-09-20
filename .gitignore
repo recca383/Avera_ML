@@ -7,6 +7,10 @@ app/api/routes/__pycache__/process.cpython-314.pyc
 run_local_gradcam.py
 avera_p2.py
 inspect_model.py
+test_local_gradcam.py
+test_gradcam_local.py
 
 # Local testing folder
 test/
+results/
+test_output/

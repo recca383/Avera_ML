@@ -33,9 +33,7 @@ import asyncio
 import math
 import os
 import tempfile
-import textwrap
-import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -44,16 +42,14 @@ import torch.nn.functional as F
 from PIL import Image, ImageDraw, ImageFont
 
 import matplotlib
-import matplotlib.colors
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import matplotlib.lines as mlines
 from matplotlib.backends.backend_pdf import PdfPages
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ml.model_loader import get_model
+from app.services import report_pages as rp
 
 logger = get_logger(__name__)
 
@@ -62,7 +58,9 @@ logger = get_logger(__name__)
 TARGET_LAYER_NAME = "backbone.conv_layers.26"
 MIN_MARKERS = 3
 MAX_MARKERS = 9
-LEGAL_FONT = "serif"
+LEGAL_FONT = rp.FONT
+plt.rcParams["font.family"] = rp.FONT
+plt.rcParams["pdf.fonttype"] = 42  # embed TrueType so report text stays selectable
 
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -487,7 +485,7 @@ def _build_heatmap_overlay(original_pil: Image.Image, cam_fullres: np.ndarray) -
     else:
         lo, hi = cam_up.min(), cam_up.max()
 
-    cam_norm = np.clip((cam_up - lo) / (hi - lo + 1e-8), 0, 1)
+    cam_norm = np.clip((cam_up - float(lo)) / (float(hi) - float(lo) + 1e-8), 0, 1)
     cam_masked = cam_norm * ink_mask
 
     heatmap_rgb = _apply_jet_colormap(cam_masked).astype(np.float32) / 255.0
@@ -551,572 +549,158 @@ def _generate_overlay_comparison(ref_pil: Image.Image, query_pil: Image.Image) -
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _verdict_color(verdict: str) -> str:
-    return "#16A34A" if verdict == "GENUINE" else "#DC2626"
+    return rp.verdict_color(verdict)
 
 
 def _stamp_footer(fig, page_counter: list, total_pages: Optional[int], case_id: str) -> None:
-    """Stamps a running page number + case ID + confidentiality notice on
-    every page. page_counter is a 1-element list so every helper shares
-    the same running count."""
-    page_counter[0] += 1
-    fig.text(
-        0.5,
-        0.015,
-        f"Page {page_counter[0]} of {total_pages}    |    AVERA Case {case_id}    |    "
-        f"CONFIDENTIAL - Generated for Academic/Thesis Research Purposes",
-        fontsize=7,
-        color="#888888",
-        ha="center",
-        family=LEGAL_FONT,
-    )
+    """Running page number + case ID + confidentiality notice (text only)."""
+    rp.footer(fig, page_counter, total_pages, case_id, rule=False)
 
 
-def _page_title(
-    pdf,
-    page_counter,
-    total_pages,
-    case_id,
-    verdict,
-    conf_genuine,
-    conf_forged,
-    avg_distance,
-    threshold,
-    query_image_name,
-    ref_image_names,
-    model_version_tag,
-) -> None:
+_LAND_W, _LAND_H = 11.0, 8.5
+_LM = 0.88  # landscape side margin (inches)
 
-    verdict_color = _verdict_color(verdict)
-    fig = plt.figure(figsize=(8.5, 11))
 
-    banner_ax = fig.add_axes((0.0, 0.86, 1.0, 0.14))
-    banner_ax.set_facecolor(verdict_color)
-    banner_ax.set_xticks([]); banner_ax.set_yticks([])
-    for spine in banner_ax.spines.values():
-        spine.set_visible(False)
-    banner_ax.text(0.5, 0.62, "AVERA", fontsize=40, fontweight="bold", color="white",
-                    ha="center", va="center", family=LEGAL_FONT, transform=banner_ax.transAxes)
-    banner_ax.text(0.5, 0.18, "Automated Verification & Explainable Recognition of Authorship",
-                    fontsize=9.5, color="white", ha="center", va="center",
-                    family=LEGAL_FONT, style="italic", transform=banner_ax.transAxes)
+def _cell_axes(fig, x_in: float, y_in: float, w_in: float, h_in: float, W: float, H: float):
+    """Axes placed by inches, measured from the top-left of the page."""
+    return fig.add_axes([x_in / W, 1 - (y_in + h_in) / H, w_in / W, h_in / H])
 
-    fig.text(0.5, 0.75, "Signature Verification & Forensic Analysis Report",
-              fontsize=17, fontweight="bold", ha="center", family=LEGAL_FONT)
-    fig.text(0.5, 0.715, f"Case {case_id}", fontsize=12, ha="center",
-              family=LEGAL_FONT, color="#555555")
 
-    verdict_ax = fig.add_axes((0.20, 0.55, 0.60, 0.10))
-    verdict_ax.set_facecolor(verdict_color)
-    verdict_ax.set_facecolor(matplotlib.colors.to_rgba(verdict_color, 0.10))
-    verdict_ax.set_xticks([]); verdict_ax.set_yticks([])
-    for spine in verdict_ax.spines.values():
-        spine.set_edgecolor(verdict_color)
-        spine.set_linewidth(1.5)
-    verdict_ax.text(0.5, 0.62, f"VERDICT: {verdict}", fontsize=16, fontweight="bold",
-                     color=verdict_color, ha="center", va="center", family=LEGAL_FONT,
-                     transform=verdict_ax.transAxes)
-    verdict_ax.text(0.5, 0.22,
-                     f"{conf_genuine:.1f}% genuine  /  {conf_forged:.1f}% forged\n"
-                     f"distance {avg_distance:.4f}  (threshold {threshold:.4f})",
-                     fontsize=8.5, ha="right", va="center", family=LEGAL_FONT, color="#444444",
-                     transform=verdict_ax.transAxes)
+def _frame(ax, color: str, lw: float = 1.0, dashed: bool = False) -> None:
+    ax.set_xticks([]); ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_edgecolor(color)
+        spine.set_linewidth(lw)
+        spine.set_linestyle("--" if dashed else "-")
 
-    meta_lines = [
-        f"Questioned Document  :  {os.path.basename(query_image_name)}",
-        f"Reference Specimens  :  {len(ref_image_names)} genuine samples on file",
-        f"Model / Pipeline     :  {model_version_tag}",
-        f"Report Generated     :  {datetime.datetime.now().strftime('%B %d, %Y  %H:%M')}",
-    ]
-    fig.text(0.5, 0.40, "\n".join(meta_lines), fontsize=10, ha="center", va="top",
-              family="monospace", color="#333333", linespacing=2.0)
 
-    fig.text(0.5, 0.10,
-              "This report was generated by AVERA, an offline signature verification\n"
-              "system developed for academic thesis research. See the final section of\n"
-              "this report for an explanation of these results and important disclaimers.",
-              fontsize=8.7, ha="center", va="center", family=LEGAL_FONT, color="#666666", style="italic")
+def _panel(fig, x_in, y_in, w_in, h_in, W, H, heading: str, body: str) -> None:
+    """Bordered note panel used in empty grid cells."""
+    rp.rect(fig, x_in / W, 1 - (y_in + h_in) / H, w_in / W, h_in / H, rp.SURFACE, rp.BORDER, 1.0)
+    rp.text(fig, (x_in + 0.18) / W, 1 - (y_in + 0.28) / H, heading, 10, rp.INK, "bold", va="center")
+    rp.para(fig, (x_in + 0.18) / W, 1 - (y_in + 0.50) / H, body, w_in - 0.36, 8.8, rp.TEXT, spacing=1.45)
 
-    _stamp_footer(fig, page_counter, total_pages, case_id)
+
+def _page_grid(pdf, page_counter, total_pages, case_id, section, title, subtitle,
+               images, labels, note, legend=None, cmap=None) -> None:
+    """
+    Landscape 3 x 2 grid: references 1-3, then reference 4 + QUESTIONED + a note panel.
+    `images` holds 5 arrays/PIL images (4 refs then the questioned one), or 4
+    overlays (the fifth cell then holds `legend`).
+    """
+    W, H = _LAND_W, _LAND_H
+    fig = plt.figure(figsize=(W, H), facecolor=rp.WHITE)
+    rp.chrome(fig, case_id, section)
+    y0 = rp.page_title(fig, title, subtitle)
+    top = (1 - y0) * H + 0.10
+    avail_h = H - top - 0.65
+    cw = (W - 2 * _LM) / 3
+    rh = avail_h / 2
+    label_h = 0.30
+    side = min(cw - 0.30, rh - label_h - 0.12)
+    n_img = len(images)
+
+    for i in range(6):
+        r, c = divmod(i, 3)
+        cx = _LM + c * cw
+        cy = top + r * rh
+        if i < n_img:
+            is_q = labels[i].upper().startswith("QUESTIONED") or (n_img == 5 and i == 4)
+            col = rp.BRAND if is_q else rp.MUTED
+            rp.text(fig, (cx + (cw - side) / 2) / W, 1 - (cy + 0.16) / H, labels[i], 9.5,
+                    rp.BRAND if is_q else rp.INK, "bold", va="center")
+            ax = _cell_axes(fig, cx + (cw - side) / 2, cy + label_h, side, side, W, H)
+            im = images[i]
+            ax.imshow(im, cmap=cmap) if cmap and not isinstance(im, Image.Image) else ax.imshow(im)
+            _frame(ax, col, 2.6 if is_q else 1.0)
+        elif legend is not None and i == n_img:
+            legend(fig, cx, cy + label_h, cw - 0.25, rh - label_h - 0.1, W, H)
+        elif i == 5 or (i == n_img and legend is None):
+            _panel(fig, cx, cy + label_h, cw - 0.25, rh - label_h - 0.1, W, H, "How to read this page", note)
+
+    if legend is not None and n_img == 4:
+        # 4 overlays fill cells 0-3; legend sits in cell 4, note in cell 5.
+        r, c = divmod(5, 3)
+        _panel(fig, _LM + c * cw, top + r * rh + label_h, cw - 0.25, rh - label_h - 0.1, W, H,
+               "How to read this page", note)
+
+    rp.footer(fig, page_counter, total_pages, case_id, rule=True)
     pdf.savefig(fig)
     plt.close(fig)
 
 
-def _page_section_divider(section_no, title, subtitle, pdf, page_counter, total_pages, case_id, verdict) -> None:
-    """Section-break divider page."""
-    verdict_color = _verdict_color(verdict)
-    fig = plt.figure(figsize=(8.5, 11))
-    fig.text(0.5, 0.58, f"SECTION {section_no}", fontsize=14, color="#999999",
-              ha="center", family=LEGAL_FONT)
-    fig.text(0.5, 0.52, title, fontsize=26, fontweight="bold", ha="center",
-              va="center", color=verdict_color, family=LEGAL_FONT)
-    if subtitle:
-        fig.text(0.5, 0.45, subtitle, fontsize=12, ha="center", va="center",
-                  color="#444444", family=LEGAL_FONT)
-    fig.add_artist(mlines.Line2D([0.25, 0.75], [0.60, 0.60], transform=getattr(fig, 'transFigure'),
-                                  color=verdict_color, linewidth=1.5))
-    _stamp_footer(fig, page_counter, total_pages, case_id)
-    pdf.savefig(fig)
-    plt.close(fig)
-
-
-def _page_case_summary(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, conf_forged,
-                        avg_distance, threshold, query_image_name, ref_image_names,
-                        model_version_tag, findings_rows) -> None:
-    """Section 1 content -- case metadata, verdict block, F1-F7 at a glance."""
-    verdict_color = _verdict_color(verdict)
-    fig = plt.figure(figsize=(8.5, 11))
-    fig.suptitle("Case Summary", fontsize=16, fontweight="bold", family=LEGAL_FONT, y=0.965)
-
-    fig.text(0.08, 0.90, "Case Information", fontsize=11, fontweight="bold", family=LEGAL_FONT)
-    info_lines = [
-        f"Case ID               {case_id}",
-        f"Questioned Document   {os.path.basename(query_image_name)}",
-        f"Reference Specimens   {', '.join(os.path.basename(r) for r in ref_image_names)}",
-        f"Model / Pipeline      {model_version_tag}  (training ratio 5:4, inference ratio 4:1)",
-        f"Report Generated      {datetime.datetime.now().strftime('%B %d, %Y  %H:%M')}",
-    ]
-    fig.text(0.08, 0.87, "\n".join(info_lines), fontsize=9, va="top",
-              family="monospace", color="#333333", linespacing=1.9)
-
-    fig.text(0.08, 0.68, "Verdict", fontsize=11, fontweight="bold", family=LEGAL_FONT)
-    verdict_ax = fig.add_axes((0.08, 0.58, 0.84, 0.08))
-    verdict_ax.set_facecolor(verdict_color); verdict_ax.set_facecolor(matplotlib.colors.to_rgba(verdict_color, 0.10))
-    verdict_ax.set_xticks([]); verdict_ax.set_yticks([])
-    for spine in verdict_ax.spines.values():
-        spine.set_edgecolor(verdict_color); spine.set_linewidth(1.5)
-    verdict_ax.text(0.03, 0.5, f"{verdict}", fontsize=15, fontweight="bold", color=verdict_color,
-                     va="center", family=LEGAL_FONT, transform=verdict_ax.transAxes)
-    verdict_ax.text(0.97, 0.5,
-                     f"{conf_genuine:.1f}% genuine  /  {conf_forged:.1f}% forged\n"
-                     f"distance {avg_distance:.4f}  (threshold {threshold:.4f})",
-                     fontsize=8.5, ha="right", va="center", family=LEGAL_FONT, color="#444444",
-                     transform=verdict_ax.transAxes)
-
-    fig.text(0.08, 0.46, "Key Findings at a Glance (F1-F7)", fontsize=11,
-              fontweight="bold", family=LEGAL_FONT)
-
-    y = 0.42
-    row_h = 0.032
-    for code, name, label in findings_rows:
-        fig.text(0.09, y, code, fontsize=9.5, fontweight="bold", family=LEGAL_FONT, color=verdict_color)
-        fig.text(0.14, y, name, fontsize=9.5, family=LEGAL_FONT, color="#333333")
-        fig.text(0.62, y, label, fontsize=9.5, family=LEGAL_FONT, color="#555555", ha="left")
-        y -= row_h
-    fig.add_artist(mlines.Line2D([0.08, 0.92], [0.445, 0.445], transform=getattr(fig, 'transFigure'),
-                                  color="#cccccc", linewidth=0.8))
-
-    fig.text(0.08, 0.16,
-              "Full findings, measured data tables, and supporting visual evidence for\n"
-              "each F1-F7 category are provided in Sections 2 and 3 of this report.",
-              fontsize=9, family=LEGAL_FONT, color="#666666", style="italic")
-
-    _stamp_footer(fig, page_counter, total_pages, case_id)
-    pdf.savefig(fig)
-    plt.close(fig)
-
-
-def _page_signature_strip(pil_images, labels, title, pdf, case_id, verdict,
-                           query_index=4, cmap: Optional[str] = None, vmin: Optional[float] = None, vmax: Optional[float] = None,
-                           page_counter: Optional[list] = None, total_pages: int = 0) -> None:
-    """Horizontal strip: references left to right, gap, then the QUESTIONED image."""
-    verdict_color = _verdict_color(verdict)
-    n_refs = query_index
-    width_ratios = [1] * n_refs + [0.25, 1.15]
-    fig = plt.figure(figsize=(3.2 * (n_refs + 1) + 1, 4.4))
-    gs = fig.add_gridspec(1, n_refs + 2, width_ratios=width_ratios, wspace=0.15)
-
-    fig.suptitle(title, fontsize=15, fontweight="bold", color=verdict_color, y=1.02, family=LEGAL_FONT)
-
-    for i in range(n_refs):
-        ax = fig.add_subplot(gs[0, i])
-        ax.imshow(pil_images[i], cmap=cmap, vmin=vmin, vmax=vmax)
-        ax.set_title(labels[i], fontsize=10, fontweight="bold", family=LEGAL_FONT)
-        ax.set_xticks([]); ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_edgecolor("#999999")
-
-    gap_ax = fig.add_subplot(gs[0, n_refs])
-    gap_ax.axis("off")
-    gap_ax.axvline(x=0.5, ymin=0.05, ymax=0.95, color="#999999", linewidth=1.2, linestyle="--")
-
-    q_ax = fig.add_subplot(gs[0, n_refs + 1])
-    q_ax.imshow(pil_images[query_index], cmap=cmap, vmin=vmin, vmax=vmax)
-    q_ax.set_title(f"QUESTIONED\n{labels[query_index]}", fontsize=10,
-                    fontweight="bold", color=verdict_color, family=LEGAL_FONT)
-    q_ax.set_xticks([]); q_ax.set_yticks([])
-    for spine in q_ax.spines.values():
-        spine.set_edgecolor(verdict_color)
-        spine.set_linewidth(2.5)
-
-    plt.tight_layout(rect=(0.0, 0.03, 1.0, 0.96))
-    if page_counter is not None:
-        _stamp_footer(fig, page_counter, total_pages, case_id)
-    pdf.savefig(fig, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _page_signature_stack(pil_images, labels, title, pdf, case_id, verdict,
-                           query_index=4, cmap: Optional[str] = None, vmin: Optional[float] = None, vmax: Optional[float] = None,
-                           colorbar=False, page_counter: Optional[list] = None, total_pages: int = 0) -> None:
-    """Vertical stack: references stack first, divider, then the QUESTIONED row."""
-    verdict_color = _verdict_color(verdict)
-    n_refs = query_index
-    height_ratios = [1] * n_refs + [0.18, 1.15]
-    fig = plt.figure(figsize=(4.6, 3.0 * (n_refs + 1) + 1))
-    gs = fig.add_gridspec(n_refs + 2, 1, height_ratios=height_ratios, hspace=0.12)
-
-    fig.suptitle(title, fontsize=15, fontweight="bold", color=verdict_color, y=0.995, family=LEGAL_FONT)
-
-    for i in range(n_refs):
-        ax = fig.add_subplot(gs[i, 0])
-        im = ax.imshow(pil_images[i], cmap=cmap, vmin=vmin, vmax=vmax)
-        ax.set_ylabel(labels[i], fontsize=9, fontweight="bold", rotation=0,
-                       labelpad=45, va="center", family=LEGAL_FONT)
-        ax.set_xticks([]); ax.set_yticks([])
-        if colorbar:
-            plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02)
-
-    gap_ax = fig.add_subplot(gs[n_refs, 0])
-    gap_ax.axis("off")
-    gap_ax.axhline(y=0.5, xmin=0.05, xmax=0.95, color="#999999", linewidth=1.2, linestyle="--")
-
-    q_ax = fig.add_subplot(gs[n_refs + 1, 0])
-    im = q_ax.imshow(pil_images[query_index], cmap=cmap, vmin=vmin, vmax=vmax)
-    q_ax.set_ylabel(f"QUESTIONED\n{labels[query_index]}", fontsize=9,
-                     fontweight="bold", color=verdict_color, rotation=0,
-                     labelpad=45, va="center", family=LEGAL_FONT)
-    q_ax.set_xticks([]); q_ax.set_yticks([])
-    for spine in q_ax.spines.values():
-        spine.set_edgecolor(verdict_color)
-        spine.set_linewidth(2.5)
-    if colorbar:
-        plt.colorbar(im, ax=q_ax, fraction=0.035, pad=0.02)
-
-    plt.tight_layout(rect=(0, 0.02, 1, 0.98))
-    if page_counter is not None:
-        _stamp_footer(fig, page_counter, total_pages, case_id)
-    pdf.savefig(fig, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _page_overlay_comparison(overlay_imgs, title, pdf, page_counter, total_pages, case_id, verdict) -> None:
-    """Blue = reference-only ink, red = query-only ink, purple = overlap (agreement)."""
-    verdict_color = _verdict_color(verdict)
-    n = len(overlay_imgs)
-    fig, axes = plt.subplots(1, n, figsize=(3.2 * n + 1, 4.6))
-    axes = list(np.atleast_1d(axes).ravel())
-    fig.suptitle(title, fontsize=15, fontweight="bold", color=verdict_color, y=1.02, family=LEGAL_FONT)
-
-    for i, img in enumerate(overlay_imgs):
-        axes[i].imshow(img)
-        axes[i].set_title(f"vs. Reference {i + 1}", fontsize=10, fontweight="bold", family=LEGAL_FONT)
-        axes[i].set_xticks([]); axes[i].set_yticks([])
-        for spine in axes[i].spines.values():
-            spine.set_edgecolor("#999999")
-
-    legend_handles = [
-        mpatches.Patch(color="#3B82F6", label="Reference only (missing in query)"),
-        mpatches.Patch(color="#DC2626", label="Query only (extra in query)"),
-        mpatches.Patch(color="#581C87", label="Match (present in both)"),
-    ]
-    fig.legend(handles=legend_handles, loc="lower center", ncol=3, fontsize=8.5,
-               frameon=False, bbox_to_anchor=(0.5, 0.02))
-
-    plt.tight_layout(rect=(0, 0.08, 1, 0.95))
-    _stamp_footer(fig, page_counter, total_pages, case_id)
-    pdf.savefig(fig, bbox_inches="tight")
-    plt.close(fig)
+def _overlay_legend(fig, x_in, y_in, w_in, h_in, W, H) -> None:
+    rp.rect(fig, x_in / W, 1 - (y_in + h_in) / H, w_in / W, h_in / H, rp.WHITE, rp.BORDER, 1.0)
+    rp.text(fig, (x_in + 0.18) / W, 1 - (y_in + 0.28) / H, "Legend", 10, rp.INK, "bold", va="center")
+    items = [("#3B82F6", "Reference only (missing in the questioned signature)"),
+             ("#DC2626", "Questioned only (extra in the questioned signature)"),
+             ("#581C87", "Match (present in both)")]
+    for k, (col, lab) in enumerate(items):
+        yy = y_in + 0.62 + k * 0.42
+        rp.rect(fig, (x_in + 0.18) / W, 1 - (yy + 0.14) / H, 0.28 / W, 0.14 / H, col, col, 0.8)
+        for j, ln in enumerate(rp.wrap(lab, w_in - 1.0, 8.5)[:2]):
+            rp.text(fig, (x_in + 0.62) / W, 1 - (yy + 0.06 + j * 0.16) / H, ln, 8.5, rp.TEXT, va="center")
 
 
 def _page_stroke_crop_table(rows, title, pdf, page_counter, total_pages, case_id, verdict,
                              rows_per_page=3) -> None:
-    """
-    Stroke-difference table -- one row per marker (3-9), left to right:
-    [Marker # | Ref 1 | Ref 2 | Ref 3 | Ref 4 | Questioned | Caption].
-    Split across landscape pages so thumbnails and captions stay legible.
-    """
-    verdict_color = _verdict_color(verdict)
+    """One row per marker: Marker | Ref 1-4 | Questioned | description. Landscape pages."""
     n_total = len(rows)
     if n_total == 0:
         return
-    n_pages = -(-n_total // rows_per_page)  # ceil division
+    n_pages = -(-n_total // rows_per_page)
+    W, H = _LAND_W, _LAND_H
 
     for page_idx in range(n_pages):
-        chunk = rows[page_idx * rows_per_page: (page_idx + 1) * rows_per_page]
-        n = len(chunk)
+        chunk = rows[page_idx * rows_per_page:(page_idx + 1) * rows_per_page]
+        fig = plt.figure(figsize=(W, H), facecolor=rp.WHITE)
+        rp.chrome(fig, case_id, "Visual Evidence")
+        page_t = title if n_pages == 1 else f"{title} (page {page_idx + 1} of {n_pages})"
+        y0 = rp.page_title(fig, page_t,
+                           "Solid gray border = the specimen has ink at this point. "
+                           "Dashed border = no ink there. Blue border = questioned signature.")
+        top = (1 - y0) * H + 0.05
+        img, gap = 1.2, 0.10
+        x_img0 = _LM + 0.80
+        x_cap = x_img0 + 5 * img + 4 * gap + 0.22
+        row_h = (H - top - 0.70 - 0.30) / rows_per_page
 
-        fig = plt.figure(figsize=(14, 8.5))  # landscape
-        gs = fig.add_gridspec(n, 6, width_ratios=[1, 1, 1, 1, 1, 1.6],
-                               hspace=0.55, wspace=0.12,
-                               left=0.06, right=0.97, top=0.85, bottom=0.06)
-
-        page_title = title if n_pages == 1 else f"{title}  (page {page_idx + 1} of {n_pages})"
-        fig.suptitle(page_title, fontsize=17, fontweight="bold", color=verdict_color,
-                     y=0.965, family=LEGAL_FONT)
-        fig.text(0.5, 0.915, "Green border = specimen has ink at this point   |   Gray dashed = specimen does not",
-                  fontsize=9.5, ha="center", color="#666666", style="italic", family=LEGAL_FONT)
+        for c in range(4):
+            rp.text(fig, (x_img0 + c * (img + gap) + img / 2) / W, 1 - (top + 0.12) / H,
+                    f"Reference {c + 1}", 8.5, rp.INK, "bold", ha="center", va="center")
+        rp.text(fig, (x_img0 + 4 * (img + gap) + img / 2) / W, 1 - (top + 0.12) / H, "Questioned",
+                8.5, rp.BRAND, "bold", ha="center", va="center")
+        rp.text(fig, x_cap / W, 1 - (top + 0.12) / H, "Discrepancy", 8.5, rp.INK, "bold", va="center")
 
         for r, row in enumerate(chunk):
+            ry = top + 0.30 + r * row_h
+            rp.text(fig, _LM / W, 1 - (ry + img / 2) / H, f"Marker {row['marker_num']}", 10, rp.INK,
+                    "bold", va="center")
             for c in range(4):
-                ax_ref = fig.add_subplot(gs[r, c])
-                ax_ref.imshow(row["ref_crops"][c])
-                ax_ref.set_xticks([]); ax_ref.set_yticks([])
-
+                ax = _cell_axes(fig, x_img0 + c * (img + gap), ry, img, img, W, H)
+                ax.imshow(row["ref_crops"][c])
                 has_ink = (c + 1) in row.get("refs_with_ink", [])
-                for spine in ax_ref.spines.values():
-                    spine.set_edgecolor("#16A34A" if has_ink else "#9CA3AF")
-                    spine.set_linewidth(2.6 if has_ink else 1.2)
-                    spine.set_linestyle("solid" if has_ink else "dashed")
+                _frame(ax, rp.MUTED if has_ink else rp.BORDER, 1.6 if has_ink else 1.2, dashed=not has_ink)
+            axq = _cell_axes(fig, x_img0 + 4 * (img + gap), ry, img, img, W, H)
+            axq.imshow(row["query_crop"])
+            _frame(axq, rp.BRAND, 2.6)
 
-                if c == 0:
-                    ax_ref.set_ylabel(f"Marker {row['marker_num']}", fontsize=13,
-                                       fontweight="bold", rotation=0, labelpad=48,
-                                       va="center", family=LEGAL_FONT)
-                if r == 0:
-                    ax_ref.set_title(f"Reference {c + 1}", fontsize=11, fontweight="bold", family=LEGAL_FONT)
-
-            ax_qry = fig.add_subplot(gs[r, 4])
-            ax_qry.imshow(row["query_crop"])
-            ax_qry.set_xticks([]); ax_qry.set_yticks([])
-            for spine in ax_qry.spines.values():
-                spine.set_edgecolor(verdict_color)
-                spine.set_linewidth(2.0)
-            if r == 0:
-                ax_qry.set_title("QUESTIONED", fontsize=11, fontweight="bold",
-                                  color=verdict_color, family=LEGAL_FONT)
-
-            ax_cap = fig.add_subplot(gs[r, 5])
-            ax_cap.axis("off")
             cap_lines = row["caption"].split("\n")
             header = cap_lines[0].split("-", 1)
-            title_txt = header[0].strip()
+            head_txt = header[0].strip()
             detail = header[1].strip() if len(header) > 1 else ""
             refs_note = cap_lines[1] if len(cap_lines) > 1 else ""
-            ax_cap.text(0.0, 0.78, title_txt, fontsize=11.5, fontweight="bold",
-                        va="center", ha="left", wrap=True, family=LEGAL_FONT, transform=ax_cap.transAxes)
-            ax_cap.text(0.0, 0.50, detail, fontsize=10.5, va="center", ha="left",
-                        wrap=True, color="#333333", family=LEGAL_FONT, transform=ax_cap.transAxes)
-            ax_cap.text(0.0, 0.22, refs_note, fontsize=10, va="center", ha="left",
-                        wrap=True, color="#666666", style="italic", family=LEGAL_FONT, transform=ax_cap.transAxes)
-            if r == 0:
-                ax_cap.text(0.0, 1.0, "Discrepancy", fontsize=12, fontweight="bold",
-                            va="bottom", ha="left", family=LEGAL_FONT, transform=ax_cap.transAxes)
+            cw_in = W - _LM - x_cap
+            yy = 1 - (ry + 0.05) / H
+            yy = rp.para(fig, x_cap / W, yy, head_txt, cw_in, 9.5, rp.INK, "bold", 1.3) - 0.05 / H
+            yy = rp.para(fig, x_cap / W, yy, detail, cw_in, 8.5, rp.TEXT, "normal", 1.35) - 0.05 / H
+            rp.para(fig, x_cap / W, yy, refs_note, cw_in, 8, rp.MUTED, "normal", 1.3)
+            if r < len(chunk) - 1:
+                rp.hline(fig, _LM / W, 1 - _LM / W, 1 - (ry + row_h - 0.10) / H, rp.BORDER, 0.8)
 
-        _stamp_footer(fig, page_counter, total_pages, case_id)
-        pdf.savefig(fig, bbox_inches="tight")
-        plt.close(fig)
-
-
-def _page_text_block(lines, title, pdf, page_counter, total_pages, case_id,
-                      lines_per_page=46, mono=True) -> None:
-    """Paginated plain-text page(s), used for the F1-F7 findings report."""
-    font = "monospace" if mono else LEGAL_FONT
-    for start in range(0, len(lines), lines_per_page):
-        chunk = lines[start:start + lines_per_page]
-        fig = plt.figure(figsize=(8.5, 11))
-        fig.suptitle(title, fontsize=13, fontweight="bold", y=0.97, family=LEGAL_FONT)
-        fig.text(0.06, 0.935, "\n".join(chunk), fontsize=8.3, family=font, va="top", ha="left")
-        _stamp_footer(fig, page_counter, total_pages, case_id)
+        rp.footer(fig, page_counter, total_pages, case_id, rule=True)
         pdf.savefig(fig)
         plt.close(fig)
-
-
-def _page_explanation(pdf, page_counter, total_pages, case_id) -> None:
-    """Section 4 content -- plain-language explanation of what the results mean."""
-    fig = plt.figure(figsize=(8.5, 11))
-    fig.suptitle("Understanding This Report", fontsize=16, fontweight="bold", family=LEGAL_FONT, y=0.97)
-
-    body = [
-        "WHAT AVERA DOES",
-        "AVERA compares a questioned ('query') signature against four genuine",
-        "reference specimens using a trained Siamese Neural Network (SNN). The",
-        "network converts each signature into a numeric embedding, and measures",
-        "the distance between the query's embedding and the reference cluster's",
-        "embeddings. A shorter distance indicates greater structural similarity.",
-        "",
-        "HOW THE VERDICT IS DETERMINED",
-        "The verdict (GENUINE or FORGED) is based on whether this distance falls",
-        "below a decision threshold, calibrated from the Equal Error Rate (EER)",
-        "during model evaluation. The confidence percentages reflect how far the",
-        "distance sits from that threshold, not a probability in the statistical",
-        "sense.",
-        "",
-        "WHAT F1-F7 REPRESENT",
-        "F1-F7 translate the model's decision into forensic-examiner vocabulary:",
-        "  F1  General structural features (strokes, pen lifts, terminal marks)",
-        "  F2  Baseline angle consistency",
-        "  F3  Line quality / tremor (stroke smoothness)",
-        "  F4  Proportion & spacing (signature dimensions)",
-        "  F5  Variation vs. the population-wide decision threshold",
-        "  F6  Variation vs. this writer's OWN natural signature-to-signature range",
-        "  F7  Ink deposition consistency (a pen-pressure proxy)",
-        "F1-F4 and F7 are computed with classical image-processing techniques;",
-        "F5 and F6 come directly from the trained model's own embedding space.",
-        "",
-        "WHAT THE VISUAL EVIDENCE MEANS",
-        "Grad-CAM shows where the NEURAL NETWORK focused when making its",
-        "decision -- it is a model-transparency check, not a forensic finding on",
-        "its own. The Overlay Comparison and Forensic Stroke Map are classical,",
-        "model-independent visual comparisons of the ink itself, closer to",
-        "traditional forensic document examination practice.",
-        "",
-        "HOW THIS REPORT SHOULD BE USED",
-        "AVERA is a decision-support and explainability tool developed for",
-        "academic thesis research. Its numeric thresholds are current",
-        "engineering defaults and have not yet been independently validated",
-        "against a licensed forensic examiner's judgment on this dataset. This",
-        "report should be treated as a structured summary of computational",
-        "evidence to inform -- not replace -- expert human review.",
-    ]
-    fig.text(0.08, 0.90, "\n".join(body), fontsize=8.7, va="top", family=LEGAL_FONT,
-              color="#222222", linespacing=1.55)
-
-    _stamp_footer(fig, page_counter, total_pages, case_id)
-    pdf.savefig(fig)
-    plt.close(fig)
-
-
-def _page_disclaimer(pdf, page_counter, total_pages, case_id) -> None:
-    """Final page -- formal disclaimer."""
-    fig = plt.figure(figsize=(8.5, 11))
-
-    banner_ax = fig.add_axes((0.0, 0.90, 1.0, 0.06))
-    banner_ax.set_facecolor("#7C2D12")
-    banner_ax.set_xticks([]); banner_ax.set_yticks([])
-    for spine in banner_ax.spines.values():
-        spine.set_visible(False)
-    banner_ax.text(0.5, 0.5, "DISCLAIMER", fontsize=15, fontweight="bold", color="white",
-                    ha="center", va="center", family=LEGAL_FONT, transform=banner_ax.transAxes)
-
-    body = [
-        "1.  AVERA is an automated, offline signature verification system",
-        "    developed as part of an academic thesis project. It is a research",
-        "    prototype, not a certified or legally-accredited forensic tool.",
-        "",
-        "2.  The findings in this report (F1-F7, verdict, and confidence",
-        "    percentages) are the output of computational heuristics and a",
-        "    trained neural network. Several numeric thresholds used to label",
-        "    these findings are current engineering defaults and have not yet",
-        "    been independently validated against a licensed forensic document",
-        "    examiner's judgment on this specific dataset.",
-        "",
-        "3.  This report is intended to serve as a decision-support and",
-        "    explainability aid -- it summarizes computational evidence to help",
-        "    a human examiner reason about a case. It is NOT a substitute for",
-        "    review and certification by a qualified, licensed Questioned",
-        "    Document Examiner (QDE), and should not be submitted as",
-        "    standalone evidence in any legal or administrative proceeding.",
-        "",
-        "4.  Results may vary with scan quality, signature complexity, and",
-        "    writer-specific variability. A GENUINE or FORGED verdict reflects",
-        "    the balance of computed evidence at the time of analysis, and",
-        "    does not constitute a certainty claim.",
-        "",
-        "5.  This system and report were developed for academic research",
-        "    purposes by the AVERA thesis research team.",
-    ]
-    fig.text(0.08, 0.85, "\n".join(body), fontsize=9, va="top", family=LEGAL_FONT,
-              color="#222222", linespacing=1.7)
-
-    fig.text(0.5, 0.06, f"AVERA Case {case_id} - End of Report",
-              fontsize=9, ha="center", family=LEGAL_FONT, color="#888888", style="italic")
-
-    _stamp_footer(fig, page_counter, total_pages, case_id)
-    pdf.savefig(fig)
-    plt.close(fig)
-
-
-def _build_f1f7_report_lines(
-    findings: Optional[dict],
-    case_id: str,
-    verdict: str,
-    conf_genuine: float,
-    conf_forged: float,
-    avg_distance: float,
-    threshold: float,
-) -> tuple[list[str], list[tuple[str, str, str]]]:
-    """
-    Builds the F1-F7 findings text report and the (code, name, label) rows
-    used on the Case Summary page.
-
-    `findings` is expected to be shaped like the notebook's `forensic_json`:
-        {
-          "key_findings": {"f1_label": ..., ..., "f7_label": ...},
-          "modal_observations": {
-              "f1_observation": ..., ..., "f7_observation": ...,
-              "f2_angle": ..., "f3_variance": ..., "f4_width_px": ...,
-              "f4_height_px": ..., "f4_ratio": ..., "f5_distance": ...,
-              "f5_percent_threshold": ..., "f6_min": ..., "f6_max": ...,
-              "f6_mean": ..., "f7_darkness": ..., "f7_width_variance": ...,
-          },
-        }
-    Missing keys render as "N/A" instead of raising, since F1-F7 is
-    computed by a separate service and this parameter may not be wired
-    through on every call site yet.
-    """
-    findings = findings or {}
-    key = findings.get("key_findings", {})
-    modal = findings.get("modal_observations", {})
-
-    def kf(code: str) -> str:
-        return key.get(f"{code}_label", "N/A")
-
-    def mo(field: str) -> str:
-        value = modal.get(field, "N/A")
-        return value if isinstance(value, str) else str(value)
-
-    names = {
-        "f1": "General Information",
-        "f2": "Relation to Baseline",
-        "f3": "Line Quality",
-        "f4": "Proportion & Spacing",
-        "f5": "Variation",
-        "f6": "Natural Variation Range",
-        "f7": "Stroke Density (Ink Deposition)",
-    }
-
-    findings_rows = [(code.upper(), name, kf(code)) for code, name in names.items()]
-
-    lines: List[str] = []
-    sep = "=" * 65
-    lines.append(sep)
-    lines.append("  AVERA FORENSIC FINDINGS REPORT  (F1-F7)")
-    lines.append(sep)
-    lines.append("")
-    lines.append(f"  Case            : {case_id}")
-    lines.append(f"  Verdict         : {verdict}")
-    lines.append(f"  Confidence      : {conf_genuine:.1f}% genuine / {conf_forged:.1f}% forged")
-    lines.append(f"  Avg distance    : {avg_distance:.4f}   (threshold: {threshold:.4f})")
-    lines.append("")
-    lines.append("  KEY FINDINGS")
-    lines.append("  " + "-" * 61)
-    for code, name, label in findings_rows:
-        lines.append(f"  {code}  {name:<32}: {label}")
-    lines.append("")
-
-    lines.append("  OBSERVATIONS")
-    lines.append("  " + "-" * 61)
-    for code, name in names.items():
-        lines.append(f"  {code.upper()} - {name}")
-        obs = mo(f"{code}_observation")
-        for wrapped in textwrap.wrap(obs, width=72):
-            lines.append(f"      {wrapped}")
-        lines.append("")
-
-    lines.append("  RAW MEASURED VALUES")
-    lines.append("  " + "-" * 61)
-    lines.append(f"  F2 angle (deg)         : {mo('f2_angle')}")
-    lines.append(f"  F3 curvature variance  : {mo('f3_variance')}")
-    lines.append(
-        f"  F4 W x H / ratio       : {mo('f4_width_px')}px x {mo('f4_height_px')}px / {mo('f4_ratio')}"
-    )
-    lines.append(f"  F5 distance / % thresh : {mo('f5_distance')} / {mo('f5_percent_threshold')}%")
-    lines.append(f"  F6 natural range       : {mo('f6_min')} - {mo('f6_max')}  (mean {mo('f6_mean')})")
-    lines.append(f"  F7 darkness / width var: {mo('f7_darkness')} / {mo('f7_width_variance')}")
-    lines.append("")
-    lines.append(sep)
-
-    return lines, findings_rows
 
 
 def export_compiled_pdf(
@@ -1139,123 +723,74 @@ def export_compiled_pdf(
     forensic_findings: Optional[dict] = None,
 ) -> str:
     """
-    Assemble the single, court-exhibit-style compiled PDF: cover page,
-    Section 1 (case summary), Section 2 (signatures, Grad-CAM heatmap
-    overlaid on the signature, overlay comparison, ink bounding box,
-    forensic stroke map, per-marker stroke-difference crop table),
-    Section 3 (F1-F7 findings), Section 4 (explanation + disclaimer).
+    Assemble the compiled report PDF (Letter, Arial, AVERA brand colour):
+    cover, case summary, forensic findings (F1-F7 cards), visual evidence
+    (signatures, Grad-CAM, overlay, bounding box, stroke map, stroke table),
+    explanation + glossary, disclaimer.
 
-    `blends` must be the heatmap-over-signature arrays (see
-    `_build_heatmap_overlay`), not the raw masked CAM, so the Grad-CAM
-    page shows the signature underneath the heatmap.
+    `blends` must be the heatmap-over-signature arrays (see `_build_heatmap_overlay`).
+    `forensic_findings` is the dict from forensic_findings_service.compute_forensic_findings.
     """
     os.makedirs(results_dir, exist_ok=True)
     compiled_pdf_path = os.path.join(results_dir, f"AVERA_compiled_report_{case_id}.pdf")
-    image_labels_full = ["Ref 1", "Ref 2", "Ref 3", "Ref 4", "Query"]
-
-    report_lines, findings_rows = _build_f1f7_report_lines(
-        forensic_findings, case_id, verdict, conf_genuine, conf_forged, avg_distance, threshold
-    )
-    lines_per_page = 70
-    findings_pages = -(-len(report_lines) // lines_per_page)  # ceil division
+    image_labels = ["Reference 1", "Reference 2", "Reference 3", "Reference 4", "QUESTIONED"]
 
     rows_per_page_stroke_table = 3
     stroke_table_pages = -(-max(len(stroke_crop_rows), 1) // rows_per_page_stroke_table)
-
-    # Fixed (non-findings, non-stroke-table) page count:
-    #   Cover(1) + [S1 divider(1) + Case Summary(1)] + [S2 divider(1) + Signatures(1)
-    #   + Grad-CAM(1) + Overlay(1) + BBox(1) + Stroke Map(1)]
-    #   + [S3 divider(1)] + [S4 divider(1) + Explanation(1) + Disclaimer(1)] = 13
-    fixed_pages = 13
-    total_pages = fixed_pages + stroke_table_pages + findings_pages
+    # cover + summary + 2 findings + 5 visual grids + explanation + disclaimer = 11
+    total_pages = 11 + (stroke_table_pages if stroke_crop_rows else 0)
     page_counter = [0]
 
     logger.info("Building compiled PDF", path=compiled_pdf_path, total_pages=total_pages)
 
     with PdfPages(compiled_pdf_path) as pdf:
+        rp.page_cover(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, conf_forged,
+                      avg_distance, threshold, query_image_name, ref_image_names, model_version_tag)
+        rp.page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance, threshold,
+                        forensic_findings)
+        rp.page_findings(pdf, page_counter, total_pages, case_id, forensic_findings, part=1)
+        rp.page_findings(pdf, page_counter, total_pages, case_id, forensic_findings, part=2)
 
-        # ── Cover Page ───────────────────────────────────────────────────
-        _page_title(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, conf_forged,
-                avg_distance, threshold, query_image_name, ref_image_names, model_version_tag)
-
-        # ── SECTION 1 — Case Summary ────────────────────────────────────
-        _page_section_divider(1, "Case Summary",
-                               "Verdict, confidence, and key findings at a glance",
-                               pdf, page_counter, total_pages, case_id, verdict)
-        _page_case_summary(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, conf_forged,
-                            avg_distance, threshold, query_image_name, ref_image_names,
-                            model_version_tag, findings_rows)
-
-        # ── SECTION 2 — Visual Forensic Analysis ─────────────────────────
-        _page_section_divider(2, "Visual Forensic Analysis",
-                               "Explainable AI and classical image-comparison evidence",
-                               pdf, page_counter, total_pages, case_id, verdict)
-
-        _page_signature_strip(
-            pil_images=orig_pils, labels=image_labels_full,
-            title=f"Signature Overview  |  Case {case_id}  |  Verdict: {verdict}",
-            pdf=pdf, case_id=case_id, verdict=verdict, cmap="gray",
-            page_counter=page_counter, total_pages=total_pages,
-        )
-
-        # Grad-CAM page: heatmap blended over the actual signature (all_blend
-        # in the notebook), not the raw masked activation map, so the
-        # signature is still visible under the heatmap.
-        _page_signature_stack(
-            pil_images=blends, labels=image_labels_full,
-            title="Grad-CAM Attention Heatmaps (overlaid on signature)",
-            pdf=pdf, case_id=case_id, verdict=verdict,
-            page_counter=page_counter, total_pages=total_pages,
-        )
-
-        _page_overlay_comparison(
-            overlay_imgs=overlay_comparisons,
-            title="Overlay Comparison - Questioned vs. Each Reference",
-            pdf=pdf, page_counter=page_counter, total_pages=total_pages, case_id=case_id, verdict=verdict,
-        )
-
-        _page_signature_strip(
-            pil_images=bboxes, labels=image_labels_full,
-            title="Ink Bounding Box (stroke extents)",
-            pdf=pdf, case_id=case_id, verdict=verdict,
-            page_counter=page_counter, total_pages=total_pages,
-        )
-
-        _page_signature_stack(
-            pil_images=stroke_diffs, labels=image_labels_full,
-            title="Forensic Stroke Map (numbered discrepancies)",
-            pdf=pdf, case_id=case_id, verdict=verdict,
-            page_counter=page_counter, total_pages=total_pages,
-        )
-
+        section = "Visual Evidence"
+        _page_grid(pdf, page_counter, total_pages, case_id, section, "Signature Overview",
+                   "The four genuine references and the questioned signature side by side",
+                   orig_pils, image_labels,
+                   "Compare overall shape, size, slant and pen pressure by eye first. The pages that follow "
+                   "show where AVERA found differences.", cmap="gray")
+        _page_grid(pdf, page_counter, total_pages, case_id, section, "Grad-CAM Attention Heatmaps",
+                   "Where the AI model paid attention when comparing the signatures",
+                   blends, image_labels,
+                   "Warm colors (red, yellow) mark areas that influenced the model most; cool colors (blue) "
+                   "influenced it least. This explains the model's focus. It is not proof of forgery on its own.")
+        _page_grid(pdf, page_counter, total_pages, case_id, section, "Overlay Comparison",
+                   "The questioned signature laid over each reference signature",
+                   overlay_comparisons, ["Versus Reference 1", "Versus Reference 2",
+                                         "Versus Reference 3", "Versus Reference 4"],
+                   "Purple shows where strokes coincide. Large blue or red areas are strokes found in only one of "
+                   "the two signatures.", legend=_overlay_legend)
+        _page_grid(pdf, page_counter, total_pages, case_id, section, "Ink Bounding Box",
+                   "The outer boundary of the ink on each signature",
+                   bboxes, image_labels,
+                   "W = width and H = height in pixels; R = width divided by height. Compare the questioned "
+                   "signature's proportions with the references (see F4 Proportion & Spacing).")
+        _page_grid(pdf, page_counter, total_pages, case_id, section, "Forensic Stroke Map",
+                   "Numbered places where the questioned and reference strokes differ most",
+                   stroke_diffs, image_labels,
+                   "Each numbered marker points to one location, and the same number marks the same place on "
+                   "every signature. The next pages zoom in on each marker.")
         _page_stroke_crop_table(
             rows=stroke_crop_rows,
-            title=f"Forensic Stroke-Difference Table  ({len(stroke_crop_rows)} markers, left to right)",
+            title="Stroke-Difference Table",
             pdf=pdf, page_counter=page_counter, total_pages=total_pages, case_id=case_id, verdict=verdict,
             rows_per_page=rows_per_page_stroke_table,
         )
 
-        # ── SECTION 3 — Forensic Findings (F1-F7) ────────────────────────
-        _page_section_divider(3, "Forensic Findings (F1-F7)",
-                               "Detailed observations and measured data tables",
-                               pdf, page_counter, total_pages, case_id, verdict)
-        _page_text_block(
-            lines=report_lines,
-            title=f"AVERA - Forensic Findings Report  |  Case {case_id}",
-            pdf=pdf, page_counter=page_counter, total_pages=total_pages, case_id=case_id,
-            lines_per_page=lines_per_page,
-        )
-
-        # ── SECTION 4 — Understanding & Disclaimer ───────────────────────
-        _page_section_divider(4, "Understanding This Report",
-                               "Plain-language explanation and disclaimers",
-                               pdf, page_counter, total_pages, case_id, verdict)
-        _page_explanation(pdf, page_counter, total_pages, case_id)
-        _page_disclaimer(pdf, page_counter, total_pages, case_id)
+        rp.page_explanation(pdf, page_counter, total_pages, case_id)
+        rp.page_disclaimer(pdf, page_counter, total_pages, case_id)
 
     logger.info("Compiled PDF saved", path=compiled_pdf_path, pages_written=page_counter[0])
-
     return compiled_pdf_path
+
 
 
 def export_individual_visuals(
@@ -1341,7 +876,6 @@ class GradCAMService:
         model_version_tag: str = "AVERA SNN",
         forensic_findings: Optional[dict] = None,
         blob_svc=None,
-        upload_to_blob: bool = False,
     ) -> List[str]:
         """Generate and optionally upload visualization images and the compiled PDF report."""
         if reference_image_ids is None:
@@ -1371,11 +905,11 @@ class GradCAMService:
             forensic_findings,
         )
 
-        if upload_to_blob and blob_svc is not None:
+        if blob_svc is not None:
             return await self._upload_visuals(
                 local_paths=exported_files,
                 case_name=case_name,
-                blob_svc=blob_svc,
+                blob_svc=blob_svc
             )
 
         return exported_files
@@ -1425,16 +959,7 @@ class GradCAMService:
         questioned_bbox = _generate_bounding_box_visualization(original_pil_image)
 
         safe_case = self._sanitize_case_name(case_name)
-
-        project_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
-        export_dir = os.path.join(
-            project_root,
-            "results",
-            "gradcam-exports",
-            safe_case,
-        )
+        export_dir = os.path.join(tempfile.gettempdir(), "gradcam-exports", safe_case)
         os.makedirs(export_dir, exist_ok=True)
 
         ref_images_paths = [f"{case_name}/{ref_id}" for ref_id in reference_image_ids]

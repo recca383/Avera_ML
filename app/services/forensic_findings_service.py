@@ -199,20 +199,27 @@ def compute_forensic_findings(
     refs = [_to_gray(r) for r in reference_images]
     q = _to_gray(questioned_image)
 
+    def _plural(n: int, word: str) -> str:
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
     # ---- F1 General information ------------------------------------------------
     r1 = [measure_f1(g) for g in refs]
     q1 = measure_f1(q)
+    f1_counts: Dict[str, Dict[str, int]] = {}
     diffs = []
+    names1 = {"strokes": "strokes", "bowls": "closed loops", "dots": "dots", "pen_lifts": "pen lifts"}
     for key in ("strokes", "bowls", "dots", "pen_lifts"):
         lo, hi = min(x[key] for x in r1), max(x[key] for x in r1)
+        f1_counts[key] = {"q": q1[key], "min": lo, "max": hi}
         if q1[key] < lo - T["count_tolerance"] or q1[key] > hi + T["count_tolerance"]:
-            diffs.append(f"{key.replace('_', ' ')} ({q1[key]} vs. reference range {lo}-{hi})")
+            diffs.append(f"{names1[key]} ({q1[key]} vs. {lo}-{hi})")
     f1_label = "Consistent" if not diffs else "Different"
     f1_obs = (
-        f"Questioned: {q1['strokes']} strokes, {q1['bowls']} bowls, {q1['dots']} terminal dots, "
-        f"{q1['pen_lifts']} pen lifts. "
-        + ("All counts fall within the reference range."
-           if not diffs else "Outside the reference range: " + "; ".join(diffs) + ".")
+        f"The questioned signature has {_plural(q1['strokes'], 'separate stroke')}, "
+        f"{_plural(q1['bowls'], 'closed loop')}, {_plural(q1['dots'], 'dot')} and "
+        f"{_plural(q1['pen_lifts'], 'pen lift')}. "
+        + ("All of these fall within the range seen in the reference signatures."
+           if not diffs else "These differ from the references: " + "; ".join(diffs) + ".")
     )
 
     # ---- F2 Relation to baseline -----------------------------------------------
@@ -222,8 +229,9 @@ def compute_forensic_findings(
     ang_diff = abs(q_ang - float(r_ang.mean()))
     f2_label = "Consistent" if ang_diff <= tol else "Different"
     f2_obs = (
-        f"Questioned baseline angle {_fmt(q_ang)} deg vs. reference mean {_fmt(float(r_ang.mean()))} deg "
-        f"(difference {_fmt(ang_diff)} deg, tolerance {_fmt(tol)} deg)."
+        f"The questioned signature slopes at {_fmt(q_ang)} degrees (positive means rising to the right). "
+        f"The references average {_fmt(float(r_ang.mean()))} degrees, a difference of {_fmt(ang_diff)} degrees. "
+        f"Differences up to {_fmt(tol)} degrees are treated as normal."
     )
 
     # ---- F3 Line quality --------------------------------------------------------
@@ -233,27 +241,29 @@ def compute_forensic_findings(
     ratio3 = q_var / ref_mean_var
     if ratio3 > T["curvature_ratio"]:
         f3_label = "Less smooth"
-        f3_desc = "shows higher curvature variance (possible tremor or slow, deliberate drawing)"
+        f3_desc = "shakier than the references, which can happen when a signature is drawn slowly and carefully"
     elif ratio3 < 1.0 / T["curvature_ratio"]:
         f3_label = "Smoother"
-        f3_desc = "is noticeably smoother than the references"
+        f3_desc = "smoother than the references"
     else:
         f3_label = "Consistent"
-        f3_desc = "has curvature variance comparable to the references"
+        f3_desc = "similar in smoothness to the references"
     f3_obs = (
-        f"Questioned curvature variance {q_var:.4f} vs. reference mean {ref_mean_var:.4f} "
-        f"(ratio {_fmt(ratio3)}); the stroke {f3_desc}."
+        f"The line-wobble score is {q_var:.3f} for the questioned signature and {ref_mean_var:.3f} on average "
+        f"for the references (higher means a more uneven pen line). The questioned signature is {f3_desc}."
     )
 
     # ---- F4 Proportion & spacing ------------------------------------------------
     r4 = [measure_f4(g) for g in refs]
     q4 = measure_f4(q)
-    r_ratio = float(np.mean([x["ratio"] for x in r4]))
+    r_ratios = [x["ratio"] for x in r4]
+    r_ratio = float(np.mean(r_ratios))
     rel = abs(q4["ratio"] - r_ratio) / max(r_ratio, 1e-9)
     f4_label = "Consistent" if rel <= T["ratio_tolerance"] else "Different"
     f4_obs = (
-        f"Questioned ink box {int(q4['w'])} x {int(q4['h'])} px (aspect ratio {_fmt(q4['ratio'])}) vs. "
-        f"reference mean ratio {_fmt(r_ratio)} (deviation {_fmt(rel * 100, 1)}%)."
+        f"The questioned signature measures {int(q4['w'])} x {int(q4['h'])} pixels, about "
+        f"{_fmt(q4['ratio'])} times wider than tall. The references average {_fmt(r_ratio)} times, "
+        f"a difference of {_fmt(rel * 100, 0)}%."
     )
 
     # ---- F5 Variation (model distance vs. threshold) ---------------------------
@@ -267,12 +277,13 @@ def compute_forensic_findings(
     else:
         f5_label = "Far exceeds threshold"
     f5_obs = (
-        f"Embedding distance {distance:.4f} against decision threshold {threshold:.4f} "
-        f"({_fmt(pct, 1)}% of threshold)."
+        f"The model measured a distance of {distance:.4f} between the questioned signature and the "
+        f"combined references. The decision threshold is {threshold:.4f}. A distance above the threshold "
+        f"is read as a different writer; here it is {_fmt(pct, 0)}% of the threshold."
     )
 
     # ---- F6 Natural variation range (writer's own spread) ----------------------
-    f6_min = f6_max = f6_mean = None
+    f6_min = f6_max = f6_mean = q_to_ref = None
     if reference_embeddings is not None and len(reference_embeddings) >= 2:
         E = np.asarray(reference_embeddings)
         pair = [float(np.linalg.norm(E[i] - E[j]))
@@ -285,13 +296,13 @@ def compute_forensic_findings(
         inside = q_to_ref <= f6_max * T["natural_range_margin"]
         f6_label = "Within natural range" if inside else "Outside natural range"
         f6_obs = (
-            f"The writer's four references differ from each other by {f6_min:.4f}-{f6_max:.4f} "
-            f"(mean {f6_mean:.4f}). The questioned signature averages {q_to_ref:.4f} from the references, "
-            f"which is {'inside' if inside else 'outside'} that natural range."
+            f"This writer's own genuine signatures differ from one another by {f6_min:.2f} to {f6_max:.2f} "
+            f"(average {f6_mean:.2f}). The questioned signature is {q_to_ref:.2f} away from the references "
+            f"on average, which is {'inside' if inside else 'outside'} the writer's normal range."
         )
     else:
         f6_label = "N/A"
-        f6_obs = "Reference embeddings were not provided, so the natural variation range could not be computed."
+        f6_obs = "Reference embeddings were not provided, so the writer's natural range could not be calculated."
 
     # ---- F7 Stroke density (ink deposition) ------------------------------------
     r7 = [measure_f7(g) for g in refs]
@@ -304,15 +315,29 @@ def compute_forensic_findings(
     wv_ok = (1.0 / T["width_var_ratio"]) <= wv_ratio <= T["width_var_ratio"]
     f7_label = "Consistent" if (dark_ok and wv_ok) else "Different"
     f7_obs = (
-        f"Questioned mean ink darkness {q7['darkness']:.3f} vs. reference mean {r_dark:.3f} "
-        f"(deviation {_fmt(dark_rel * 100, 1)}%); stroke-width variance {q7['width_var']:.3f} vs. "
-        f"{r_wv:.3f} (ratio {_fmt(wv_ratio)}). Used as a proxy for pen pressure."
+        f"Average ink darkness is {q7['darkness'] * 100:.0f}% for the questioned signature and "
+        f"{r_dark * 100:.0f}% for the references. Line-width variation is {q7['width_var']:.2f} versus "
+        f"{r_wv:.2f}. Pen pressure cannot be measured directly from an image, so this is an estimate."
     )
+
+    ranges = {
+        "f1": f1_counts,
+        "f2": {"q": q_ang, "min": float(r_ang.min()), "max": float(r_ang.max())},
+        "f3": {"q": q_var, "min": float(r_var.min()), "max": float(r_var.max())},
+        "f4": {"q": q4["ratio"], "min": float(min(r_ratios)), "max": float(max(r_ratios))},
+        "f5": {"distance": float(distance), "threshold": float(threshold)},
+        "f6": {"q": q_to_ref, "min": f6_min, "max": f6_max, "mean": f6_mean},
+        "f7_darkness": {"q": q7["darkness"], "min": float(min(x["darkness"] for x in r7)),
+                        "max": float(max(x["darkness"] for x in r7))},
+        "f7_width": {"q": q7["width_var"], "min": float(min(x["width_var"] for x in r7)),
+                     "max": float(max(x["width_var"] for x in r7))},
+    }
 
     def _r(x: Optional[float], nd: int = 4) -> Any:
         return "N/A" if x is None else round(float(x), nd)
 
     return {
+        "ranges": ranges,
         "key_findings": {
             "f1_label": f1_label, "f2_label": f2_label, "f3_label": f3_label,
             "f4_label": f4_label, "f5_label": f5_label, "f6_label": f6_label,

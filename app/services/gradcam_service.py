@@ -51,6 +51,12 @@ from app.core.logging import get_logger
 from app.ml.model_loader import get_model
 from app.services import report_pages as rp
 
+from app.services import report_pages as rp
+from app.services.forensic_findings_service import (
+    compute_forensic_findings,
+    embed_tensors,
+)
+
 logger = get_logger(__name__)
 
 
@@ -732,7 +738,7 @@ def export_compiled_pdf(
     `forensic_findings` is the dict from forensic_findings_service.compute_forensic_findings.
     """
     os.makedirs(results_dir, exist_ok=True)
-    compiled_pdf_path = os.path.join(results_dir, f"AVERA_compiled_report_{case_id}.pdf")
+    compiled_pdf_path = os.path.join(results_dir, f"output.pdf")
     image_labels = ["Reference 1", "Reference 2", "Reference 3", "Reference 4", "QUESTIONED"]
 
     rows_per_page_stroke_table = 3
@@ -778,6 +784,7 @@ def export_compiled_pdf(
                    stroke_diffs, image_labels,
                    "Each numbered marker points to one location, and the same number marks the same place on "
                    "every signature. The next pages zoom in on each marker.")
+
         _page_stroke_crop_table(
             rows=stroke_crop_rows,
             title="Stroke-Difference Table",
@@ -1052,6 +1059,17 @@ class GradCAMService:
             global_top_markers=global_top_markers,
         )
 
+        if forensic_findings is None:
+            forensic_findings = self._compute_findings(
+                reference_pils=reference_pils_only,
+                questioned_pil=original_pil_image,
+                reference_tensors=reference_tensors,
+                questioned_tensor=questioned_tensor,
+                distance=avg_distance,
+                threshold=threshold,
+                case_name=case_name,
+            )
+            
         case_id = safe_case or case_name
 
         pdf_path = export_compiled_pdf(
@@ -1088,6 +1106,55 @@ class GradCAMService:
         )
 
         return exported_files
+
+    def _compute_findings(
+        self,
+        reference_pils: List[Image.Image],
+        questioned_pil: Image.Image,
+        reference_tensors: List[torch.Tensor],
+        questioned_tensor: torch.Tensor,
+        distance: float,
+        threshold: float,
+        case_name: str,
+    ) -> Optional[dict]:
+        """
+        Compute F1-F7 for the compiled PDF. Returns None on failure so the
+        report still renders (with N/A) instead of failing the whole request.
+        """
+        if not reference_pils:
+            logger.warning("No reference images; skipping forensic findings", case_name=case_name)
+            return None
+
+        model = get_model()
+        was_training = model.training
+        try:
+            model.eval()  # embeddings must not touch BatchNorm running stats
+            ref_emb = embed_tensors(reference_tensors) if reference_tensors else None
+            q_emb = embed_tensors([questioned_tensor])[0]
+
+            findings = compute_forensic_findings(
+                reference_images=reference_pils,
+                questioned_image=questioned_pil,
+                reference_embeddings=ref_emb,
+                questioned_embedding=q_emb,
+                distance=distance,
+                threshold=threshold,
+            )
+            logger.info(
+                "Forensic findings computed",
+                case_name=case_name,
+                key_findings=findings.get("key_findings"),
+            )
+            return findings
+        except Exception as exc:
+            logger.exception(
+                "Forensic findings failed; report will show N/A",
+                case_name=case_name,
+                error=str(exc),
+            )
+            return None
+        finally:
+            model.train(was_training)
 
     def _compute_gradcam(self, tensor: torch.Tensor) -> Optional[np.ndarray]:
         """Compute the Grad-CAM activation map (full resolution 224x224)."""

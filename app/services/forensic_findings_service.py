@@ -162,7 +162,7 @@ def measure_f7(gray: np.ndarray) -> Dict[str, float]:
 
 # ── Embedding helpers (F5 / F6) ───────────────────────────────────────────────
 def embed_tensors(tensors: Sequence[Any]) -> np.ndarray:
-    """L2-normalised embeddings, shape (N, D), from (1,H,W) or (1,1,H,W) tensors."""
+    """Return Pipeline 10 L2-normalized embeddings, shape (N, 128)."""
     import torch
     import torch.nn.functional as F
     from app.ml.model_loader import get_model
@@ -174,7 +174,7 @@ def embed_tensors(tensors: Sequence[Any]) -> np.ndarray:
         for t in tensors:
             if t.dim() == 3:
                 t = t.unsqueeze(0)
-            e = model(t.to(device=p.device, dtype=p.dtype))
+            e = model.get_embedding(t.to(device=p.device, dtype=p.dtype))
             outs.append(F.normalize(e, p=2, dim=1).squeeze(0).cpu().numpy())
     return np.stack(outs, axis=0)
 

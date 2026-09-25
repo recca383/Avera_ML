@@ -1191,7 +1191,7 @@ class GradCAMService:
             tensor.requires_grad_(True)
 
             with torch.enable_grad():
-                embedding = model(tensor)
+                embedding = model.get_embedding(tensor)
                 score = embedding.sum()
                 model.zero_grad()
                 score.backward()
@@ -1243,8 +1243,8 @@ class GradCAMService:
         tensor_b = tensor_b.to(device=actual_device, dtype=model_dtype)
 
         with torch.inference_mode():
-            embedding_a = model(tensor_a)
-            embedding_b = model(tensor_b)
+            embedding_a = model.get_embedding(tensor_a)
+            embedding_b = model.get_embedding(tensor_b)
             normalized_a = F.normalize(embedding_a, p=2, dim=1)
             normalized_b = F.normalize(embedding_b, p=2, dim=1)
             return float(torch.norm(normalized_a - normalized_b, p=2, dim=1).item())

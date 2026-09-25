@@ -5,7 +5,9 @@ into a human-readable verdict with confidence scores.
 
 Architecture note
 -----------------
-The Siamese network produces an embedding vector for each input image.
+The updated Siamese network accepts nine tensors for its training-style
+episode forward, but single-image inference uses `get_embedding()` to produce
+one embedding vector per input image.
 Verification is performed by computing the L2 (Euclidean) distance between
 the questioned embedding and the mean of the reference embeddings.
 - distance < threshold  → GENUINE
@@ -89,13 +91,13 @@ class InferenceService:
         with torch.inference_mode():
             # ── Embed all reference images ───────────────────────────────────
             # Shape: (N, embedding_dim)
-            reference_embeddings = model(reference_tensors)
+            reference_embeddings = model.get_embedding(reference_tensors)
 
             # Mean reference embedding aggregates across all provided references.
             mean_ref_embedding = reference_embeddings.mean(dim=0, keepdim=True)  # (1, D)
 
             # ── Embed questioned image ───────────────────────────────────────
-            questioned_embedding = model(questioned_tensor)  # (1, D)
+            questioned_embedding = model.get_embedding(questioned_tensor)  # (1, D)
 
             # ── Compute L2 distance ──────────────────────────────────────────
             distance = self._compute_distance(mean_ref_embedding, questioned_embedding)

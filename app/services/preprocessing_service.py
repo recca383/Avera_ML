@@ -1,14 +1,13 @@
 """
 Preprocessing service.
-Converts raw image bytes (downloaded from Azure Blob Storage) into normalised
-PyTorch tensors ready for Siamese network inference.
+Converts raw image bytes (downloaded from Azure Blob Storage) into inverted,
+normalised PyTorch tensors ready for Pipeline 10 Siamese network inference.
 
 Design decisions
 ----------------
 - All processing is done in-memory using NumPy + PIL; no temp files are written.
-- Images are converted to greyscale (single channel) to match the expected
-  training pipeline for handwritten signature models. Adjust _to_tensor() if
-  your model uses RGB input.
+- Images are converted to greyscale and inverted to ink-on-black (single
+    channel) to match the Pipeline 10 training pipeline.
 - The preprocessing pipeline mirrors the transforms used during training to
   avoid train/inference distribution mismatch.
 """
@@ -40,7 +39,7 @@ class PreprocessingService:
             self._settings.MODEL_INPUT_SIZE,
         )
 
-        # Match the P2 training pipeline: grayscale images normalised to 0.5/0.5.
+        # Match Pipeline 10: inverted grayscale images normalised to 0.5/0.5.
         self._mean = 0.5
         self._std = 0.5
 
@@ -56,12 +55,12 @@ class PreprocessingService:
 
         Returns
         -------
-        torch.Tensor  shape (1, 1, H, W), dtype=float32, values in [0, 1] normalised.
+        torch.Tensor  shape (1, 1, H, W), dtype=float32, values normalised to [-1, 1].
         """
         pil_image = self._load_pil_image(image_bytes)
         pil_image = self._clean_border(pil_image)
         pil_image = self._resize_and_pad(pil_image)
-        tensor = self._to_tensor(pil_image)               # (1, H, W)
+        tensor = self._to_tensor(pil_image)               # (1, H, W), ink-on-black
         tensor = self._normalise(tensor)
         tensor = tensor.unsqueeze(0)                       # (1, 1, H, W)
         return tensor
@@ -135,8 +134,8 @@ class PreprocessingService:
 
     @staticmethod
     def _to_tensor(img: Image.Image) -> torch.Tensor:
-        """PIL (H, W) greyscale → float32 tensor (1, H, W) in [0, 1]."""
-        np_img = np.array(img, dtype=np.float32) / 255.0
+        """Convert ink-on-white PIL grayscale to inverted float32 tensor."""
+        np_img = 1.0 - (np.array(img, dtype=np.float32) / 255.0)
         tensor = torch.from_numpy(np_img).unsqueeze(0)   # (1, H, W)
         return tensor
 

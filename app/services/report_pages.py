@@ -52,9 +52,11 @@ NA = "#6B7280"
 OK_FILL = "#E8F3EC"
 BAD_FILL = "#FBEAEA"
 
-# Change these strings if the examiner-approved wording must replace GENUINE/FORGED
-# (e.g. "Written by one and the same person").
-VERDICT_LABELS = {"GENUINE": "GENUINE", "FORGED": "FORGED"}
+VERDICT_LABELS = {"GENUINE": "GENUINE", "FORGED": "SUSPECTED"}
+VERDICT_SUBTITLES = {
+    "GENUINE": "Written by one and the same person",
+    "FORGED": "Not written by one and the same person",
+}
 
 PAGE_W, PAGE_H = 8.5, 11.0
 MX = 0.08                    # left/right margin (fraction of page width)
@@ -289,10 +291,11 @@ def page_cover(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, c
     rect(fig, MX, top - ch, CONTENT_W, ch, WHITE, vcol, 2.0)
     text(fig, MX + 0.03, top - 0.030, "MODEL RESULT", 8, MUTED, "bold", va="center")
     text(fig, MX + 0.03, top - 0.078, VERDICT_LABELS.get(verdict, verdict), 26, vcol, "bold", va="center")
+    text(fig, MX + 0.03, top - 0.103, VERDICT_SUBTITLES.get(verdict, ""), 9, TEXT, va="center")
     body = (f"The model measured a distance of {avg_distance:.4f} between the questioned signature and the "
             f"reference signatures. The decision threshold is {threshold:.4f}. "
             f"A distance above the threshold is read as a different writer.")
-    para(fig, MX + 0.03, top - 0.108, body, CONTENT_W * W - 0.5, 9, TEXT)
+    para(fig, MX + 0.03, top - 0.130, body, CONTENT_W * W - 0.5, 9, TEXT)
     text(fig, MX + 0.03, top - ch + 0.018,
          f"Model confidence score: {conf_genuine:.1f}% same writer / {conf_forged:.1f}% different writer "
          f"(a score, not a statistical probability)", 7.5, MUTED, va="center")
@@ -351,6 +354,7 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
     rect(fig, MX, top - ch, CONTENT_W, ch, WHITE, BORDER, 1.0)
     text(fig, MX + 0.02, top - 0.20 / H, "MODEL RESULT", 8, MUTED, "bold", va="center")
     text(fig, MX + 0.02, top - 0.55 / H, VERDICT_LABELS.get(verdict, verdict), 22, vcol, "bold", va="center")
+    text(fig, MX + 0.02, top - 0.76 / H, VERDICT_SUBTITLES.get(verdict, ""), 8.5, TEXT, va="center")
     pct = 100.0 * avg_distance / threshold if threshold > 0 else 0.0
     para(fig, MX + 0.02, top - 0.86 / H,
          f"Distance is {pct:.0f}% of the threshold. Lower distance means more similar signatures.",

@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import os
 import textwrap
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
@@ -25,8 +26,16 @@ from matplotlib.patches import Ellipse, Polygon, Rectangle
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
 def _pick_font() -> List[str]:
-    """Sora if installed, else the closest metric-compatible font."""
+    """Use bundled Sora when available, then fall back to an installed font."""
     from matplotlib import font_manager
+
+    fonts_dir = Path(__file__).resolve().parents[2] / "assets" / "fonts"
+    bundled_fonts = sorted(fonts_dir.glob("Sora-*.ttf"))
+    for font_path in bundled_fonts:
+        font_manager.fontManager.addfont(str(font_path))
+    if bundled_fonts:
+        return ["Sora", "DejaVu Sans"]
+
     installed = {f.name for f in font_manager.fontManager.ttflist}
     for name in ("Sora", "Arial", "Liberation Sans", "Helvetica", "Nimbus Sans"):
         if name in installed:

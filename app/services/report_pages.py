@@ -475,7 +475,8 @@ def _card(fig, top: float, height_in: float, code: str, findings: dict) -> float
             hline(fig, vx, vx + vw, ry + 0.15 / H, BORDER, 0.6)
             text(fig, vx, ry, nm, 8.5, TEXT, va="center")
             if c:
-                inside = (c["min"] - 1) <= c["q"] <= (c["max"] + 1)
+                tol = c.get("tol", 1)
+                inside = (c["min"] - tol) <= c["q"] <= (c["max"] + tol)
                 text(fig, vx + 0.115, ry, str(c["q"]), 9, OK if inside else WARN, "bold", va="center")
                 rng = f"{c['min']}" if c["min"] == c["max"] else f"{c['min']} to {c['max']}"
                 text(fig, vx + 0.20, ry, rng, 8.5, TEXT, va="center")
@@ -600,9 +601,11 @@ def page_disclaimer(pdf, page_counter, total_pages, case_id) -> None:
         "AVERA is an automated, offline signature verification system developed as part of an academic thesis "
         "project. It is a research prototype, not a certified or legally accredited forensic tool.",
         "The findings in this report (F1 to F7, the model result and the confidence score) come from computer "
-        "measurements and a trained neural network. Several numeric cut-offs used to label the findings are "
-        "engineering defaults and have not yet been validated against a licensed forensic document examiner's "
-        "judgment on this dataset.",
+        "measurements and a trained neural network. The cut-offs used to label F1 to F7 were calibrated "
+        "statistically on validation data so that about 1 in 20 genuine signatures is flagged on each check; "
+        "on new signatures some checks flag genuine signatures more often than that. A flagged check is a "
+        "prompt for closer review, not proof of forgery. These cut-offs have not been validated against a "
+        "licensed forensic document examiner's judgment.",
         "This report is a decision-support and explainability aid. It summarizes computational evidence to help "
         "a human examiner reason about a case. It is not a substitute for review and certification by a "
         "qualified, licensed Questioned Document Examiner, and should not be submitted as standalone evidence "

@@ -64,6 +64,10 @@ logger = get_logger(__name__)
 TARGET_LAYER_NAME = "backbone.conv_layers.26"
 MIN_MARKERS = 3
 MAX_MARKERS = 9
+# How far (px, at model input size) a shared marker may move to land on a
+# specimen's own ink. Beyond this, the specimen is treated as having no ink
+# at that marker.
+MARKER_SNAP_RADIUS = 8
 LEGAL_FONT = rp.FONT
 plt.rcParams["font.family"] = rp.FONT
 plt.rcParams["pdf.fonttype"] = 42  # embed TrueType so report text stays selectable
@@ -150,6 +154,26 @@ def _get_skeleton(gray_np: np.ndarray) -> np.ndarray:
     return skeleton.astype(np.uint8)
 
 
+def _skeleton_mismatch(
+    skel_ref: np.ndarray,
+    skel_query: np.ndarray,
+    tolerance: int = 2,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    (ref_only, query_only) skeleton pixels, where a pixel only counts as
+    unmatched if the other skeleton has no stroke within `tolerance` px.
+    Exact 1-px skeleton comparison flags strokes both specimens share as
+    soon as they are a pixel apart, which buries real differences.
+    """
+    size = 2 * tolerance + 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+    ref_near = cv2.dilate(skel_ref, kernel)
+    query_near = cv2.dilate(skel_query, kernel)
+    ref_only = (skel_ref == 1) & (query_near == 0)
+    query_only = (skel_query == 1) & (ref_near == 0)
+    return ref_only, query_only
+
+
 def _compute_global_top_markers(
     reference_gray_images: List[np.ndarray],
     query_gray_image: np.ndarray,
@@ -170,9 +194,8 @@ def _compute_global_top_markers(
     combined = np.zeros((height, width), dtype=np.float32)
 
     for skel_ref in skels_ref:
-        ref_only = ((skel_ref == 1) & (skel_query == 0)).astype(np.float32)
-        query_only = ((skel_query == 1) & (skel_ref == 0)).astype(np.float32)
-        combined += ref_only + query_only
+        ref_only, query_only = _skeleton_mismatch(skel_ref, skel_query)
+        combined += ref_only.astype(np.float32) + query_only.astype(np.float32)
 
     kernel = np.ones((region, region), np.float32) / float(region * region)
     density = cv2.filter2D(combined, -1, kernel)
@@ -227,10 +250,9 @@ def _classify_local_discrepancy(
     omission_count = 0
     addition_count = 0
     for skel_ref in skels_ref_list:
-        window_ref = skel_ref[y1:y2, x1:x2]
-        window_qry = skel_query[y1:y2, x1:x2]
-        omission_count += int(((window_ref == 1) & (window_qry == 0)).sum())
-        addition_count += int(((window_qry == 1) & (window_ref == 0)).sum())
+        ref_only, query_only = _skeleton_mismatch(skel_ref, skel_query)
+        omission_count += int(ref_only[y1:y2, x1:x2].sum())
+        addition_count += int(query_only[y1:y2, x1:x2].sum())
 
     if omission_count > addition_count * 1.3:
         return "Omission - reference stroke missing in query"
@@ -240,29 +262,199 @@ def _classify_local_discrepancy(
         return "Structural deviation - shape/path mismatch"
 
 
-def _which_refs_have_ink(
-    ref_gray_list: List[np.ndarray],
+def _snap_to_ink(
+    skeleton: np.ndarray,
+    ink_mask: np.ndarray,
     cx: int,
     cy: int,
-    radius: int = 5,
-) -> List[int]:
+    radius: int = MARKER_SNAP_RADIUS,
+) -> Optional[tuple[int, int]]:
     """
-    Returns 1-indexed reference numbers with visible ink within `radius`
-    pixels of the marker point, checked against the raw ink mask rather
-    than the thinned skeleton (which can drift a pixel or two).
+    Moves a shared marker onto the nearest stroke of one specimen. Global
+    markers sit on a pixel where *some* image differs, so in any other image
+    that exact pixel may be blank paper. Prefers the skeleton (stroke
+    centerline) and falls back to the raw ink mask, since thinning can drop
+    short or faint strokes. Returns None when the specimen has no ink within
+    `radius` of the marker.
     """
-    refs = []
-    for i, gray_np in enumerate(ref_gray_list):
-        mask = _get_ink_mask(gray_np)
-        height, width = mask.shape
-        y1, y2 = max(0, cy - radius), min(height, cy + radius + 1)
-        x1, x2 = max(0, cx - radius), min(width, cx + radius + 1)
-        if mask[y1:y2, x1:x2].sum() > 0:
-            refs.append(i + 1)
-    return refs
+    height, width = ink_mask.shape
+    y1, y2 = max(0, cy - radius), min(height, cy + radius + 1)
+    x1, x2 = max(0, cx - radius), min(width, cx + radius + 1)
+
+    for mask in (skeleton, ink_mask):
+        ys, xs = np.nonzero(mask[y1:y2, x1:x2])
+        if len(ys) == 0:
+            continue
+        dist_sq = (xs + x1 - cx) ** 2 + (ys + y1 - cy) ** 2
+        best = int(np.argmin(dist_sq))
+        if dist_sq[best] <= radius * radius:
+            return int(xs[best] + x1), int(ys[best] + y1)
+    return None
 
 
-def _crop_and_zoom(pil_img: Image.Image, cx: int, cy: int, crop_radius: int, zoom_size: int) -> np.ndarray:
+def _ink_density(gray_np: np.ndarray, sigma: float = 2.0) -> np.ndarray:
+    """Soft ink map (0 = paper, 1 = ink), blurred so alignment has a smooth basin."""
+    ink = 1.0 - np.asarray(gray_np, dtype=np.float32) / 255.0
+    return cv2.GaussianBlur(ink, (0, 0), sigma)
+
+
+def _warp_reference(ref_gray: np.ndarray, warp: np.ndarray) -> np.ndarray:
+    """Resamples a reference into questioned-image coordinates (paper-white border)."""
+    height, width = ref_gray.shape
+    return cv2.warpAffine(
+        ref_gray,
+        warp,
+        (width, height),
+        flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=255,
+    )
+
+
+def _estimate_alignment(ref_gray: np.ndarray, query_gray: np.ndarray) -> np.ndarray:
+    """
+    Returns a 2x3 affine warp mapping questioned-image coordinates to
+    reference coordinates, so the same letter lands at the same position.
+    Candidates are identity, a moment-based fit (ink centroid + spread),
+    and an ECC refinement of that fit; the one with the best ink overlap
+    wins, so a failed or implausible refinement can never make things worse.
+    """
+    identity = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)
+    ref_mask = _get_ink_mask(ref_gray)
+    query_mask = _get_ink_mask(query_gray)
+    ref_pts = np.argwhere(ref_mask > 0)[:, ::-1].astype(np.float32)
+    query_pts = np.argwhere(query_mask > 0)[:, ::-1].astype(np.float32)
+    if len(ref_pts) < 10 or len(query_pts) < 10:
+        return identity
+
+    ref_c, query_c = ref_pts.mean(axis=0), query_pts.mean(axis=0)
+    ref_spread = float(np.sqrt(((ref_pts - ref_c) ** 2).sum(axis=1).mean()))
+    query_spread = float(np.sqrt(((query_pts - query_c) ** 2).sum(axis=1).mean()))
+    scale = ref_spread / max(query_spread, 1e-6)
+    moment_fit = np.array(
+        [
+            [scale, 0, ref_c[0] - scale * query_c[0]],
+            [0, scale, ref_c[1] - scale * query_c[1]],
+        ],
+        dtype=np.float32,
+    )
+
+    query_ink = _ink_density(query_gray)
+    ref_ink = _ink_density(ref_gray)
+    candidates = [identity, moment_fit]
+    try:
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-5)
+        _, ecc_fit = cv2.findTransformECC(
+            query_ink, ref_ink, moment_fit.copy(), cv2.MOTION_AFFINE, criteria, None, 5
+        )
+        singular_values = np.linalg.svd(ecc_fit[:, :2], compute_uv=False)
+        if singular_values.min() > 0.6 and singular_values.max() < 1.6:
+            candidates.append(ecc_fit.astype(np.float32))
+    except cv2.error:
+        pass
+
+    def overlap(warp: np.ndarray) -> float:
+        aligned = _ink_density(_warp_reference(ref_gray, warp))
+        denom = np.sqrt(float((aligned * aligned).sum()) * float((query_ink * query_ink).sum()))
+        return float((aligned * query_ink).sum()) / (denom + 1e-8)
+
+    return max(candidates, key=overlap)
+
+
+def _column_correspondence(
+    query_gray: np.ndarray,
+    aligned_ref_gray: np.ndarray,
+    band_frac: float = 0.2,
+    bins: int = 16,
+) -> np.ndarray:
+    """
+    Dynamic time warping over columns, exploiting that signatures are
+    written left to right: x_map[qx] is the x in the aligned reference that
+    corresponds to column qx of the questioned signature, so a letter that is
+    wider or narrower in one specimen still maps onto itself. Each column is
+    described by its vertical ink distribution, and the warp is confined to
+    a band so it can only refine the affine alignment, not replace it.
+    """
+
+    def column_features(gray: np.ndarray) -> np.ndarray:
+        mask = cv2.GaussianBlur(_get_ink_mask(gray).astype(np.float32), (0, 0), 2.0)
+        return cv2.resize(mask, (mask.shape[1], bins), interpolation=cv2.INTER_AREA).T
+
+    q_feat = column_features(query_gray)
+    r_feat = column_features(aligned_ref_gray)
+    n, m = len(q_feat), len(r_feat)
+    cost = np.sqrt(((q_feat[:, None, :] - r_feat[None, :, :]) ** 2).sum(axis=-1))
+
+    band = max(abs(n - m) + 1, int(band_frac * max(n, m)))
+    acc = np.full((n + 1, m + 1), np.inf, dtype=np.float64)
+    acc[0, 0] = 0.0
+    for i in range(1, n + 1):
+        for j in range(max(1, i - band), min(m, i + band) + 1):
+            acc[i, j] = cost[i - 1, j - 1] + min(acc[i - 1, j - 1], acc[i - 1, j], acc[i, j - 1])
+
+    sums = np.zeros(n, dtype=np.float64)
+    counts = np.zeros(n, dtype=np.float64)
+    i, j = n, m
+    while i > 0 and j > 0:
+        sums[i - 1] += j - 1
+        counts[i - 1] += 1
+        step = int(np.argmin((acc[i - 1, j - 1], acc[i - 1, j], acc[i, j - 1])))
+        if step == 0:
+            i, j = i - 1, j - 1
+        elif step == 1:
+            i -= 1
+        else:
+            j -= 1
+    return sums / np.maximum(counts, 1)
+
+
+MarkerLocation = tuple[tuple[int, int], Optional[tuple[int, int]]]
+
+
+def _locate_markers(
+    gray_np: np.ndarray,
+    global_top_markers: List[tuple[float, int, int]],
+    warp: Optional[np.ndarray] = None,
+    x_map: Optional[np.ndarray] = None,
+    skeleton: Optional[np.ndarray] = None,
+) -> List[MarkerLocation]:
+    """
+    Per-specimen (anchor, snapped) positions, index-for-index with
+    global_top_markers. Markers live in questioned-image coordinates; for a
+    reference, x_map moves each one to the corresponding column of the
+    aligned reference and `warp` carries it back into the reference's own
+    (unwarped) pixels, so the exhibit shows original images, not resampled
+    ones. `snapped` is the nearest ink to the anchor, or None if there is none.
+    """
+    if skeleton is None:
+        skeleton = _get_skeleton(gray_np)
+    ink_mask = _get_ink_mask(gray_np)
+    height, width = ink_mask.shape
+
+    located: List[MarkerLocation] = []
+    for _score, cx, cy in global_top_markers:
+        x = float(x_map[min(cx, len(x_map) - 1)]) if x_map is not None else float(cx)
+        y = float(cy)
+        if warp is not None:
+            x, y = (warp @ np.array([x, y, 1.0], dtype=np.float32)).tolist()
+        anchor = (int(np.clip(round(x), 0, width - 1)), int(np.clip(round(y), 0, height - 1)))
+        located.append((anchor, _snap_to_ink(skeleton, ink_mask, *anchor)))
+    return located
+
+
+def _crop_and_zoom(
+    pil_img: Image.Image,
+    cx: int,
+    cy: int,
+    crop_radius: int,
+    zoom_size: int,
+    marker: Optional[tuple[int, int]] = None,
+) -> np.ndarray:
+    """
+    Crops around the specimen's marker anchor (cx, cy) -- the corresponding
+    part of the signature in that specimen -- then rings its snapped ink
+    point. With no snapped point, a thin gray ring marks the empty location.
+    """
     gray_np = np.array(pil_img.convert("L") if pil_img.mode != "L" else pil_img)
     height, width = gray_np.shape
 
@@ -272,12 +464,12 @@ def _crop_and_zoom(pil_img: Image.Image, cx: int, cy: int, crop_radius: int, zoo
     y2 = min(height, cy + crop_radius)
     crop = gray_np[y1:y2, x1:x2]
 
+    point = marker if marker is not None else (cx, cy)
     if crop.size == 0:
         crop = np.full((crop_radius * 2, crop_radius * 2), 255, dtype=np.uint8)
-        local_cx, local_cy = crop_radius, crop_radius
-    else:
-        local_cx = cx - x1
-        local_cy = cy - y1
+        x1, y1, x2, y2 = cx - crop_radius, cy - crop_radius, cx + crop_radius, cy + crop_radius
+    local_cx = point[0] - x1
+    local_cy = point[1] - y1
 
     zoomed = cv2.resize(crop, (zoom_size, zoom_size), interpolation=cv2.INTER_CUBIC)
     scale_x = zoom_size / max(1, (x2 - x1))
@@ -286,34 +478,46 @@ def _crop_and_zoom(pil_img: Image.Image, cx: int, cy: int, crop_radius: int, zoo
 
     marker_x = int(local_cx * scale_x)
     marker_y = int(local_cy * scale_y)
-    cv2.circle(zoomed_bgr, (marker_x, marker_y), 6, (30, 30, 180), 2, cv2.LINE_AA)
+    if marker is not None:
+        cv2.circle(zoomed_bgr, (marker_x, marker_y), 6, (30, 30, 180), 2, cv2.LINE_AA)
+    else:
+        cv2.circle(zoomed_bgr, (marker_x, marker_y), 8, (150, 150, 150), 1, cv2.LINE_AA)
 
     return cv2.cvtColor(zoomed_bgr, cv2.COLOR_BGR2RGB)
 
 
 def build_stroke_crop_rows(
-    reference_gray_images: List[np.ndarray],
     reference_pils: List[Image.Image],
     query_pil: Image.Image,
     skel_query: np.ndarray,
-    skels_ref: List[np.ndarray],
+    skels_ref_aligned: List[np.ndarray],
     global_top_markers: List[tuple[float, int, int]],
+    ref_locations: List[List[MarkerLocation]],
+    query_locations: List[MarkerLocation],
     crop_radius: int = 30,
     zoom_size: int = 140,
 ) -> List[dict]:
     """
     Builds one row per discrepancy marker for the stroke-difference crop
-    table: a zoomed crop of the marker location from all four references
-    plus the query, a short caption classifying the discrepancy, and which
-    reference(s) actually show ink at that point.
+    table: a zoomed crop of the corresponding part of the signature from all
+    four references plus the query, a short caption classifying the
+    discrepancy, and which reference(s) actually show ink there.
+    `skels_ref_aligned` are reference skeletons in questioned-image
+    coordinates, matching how the markers were found.
     """
     rows: List[dict] = []
     for idx, (_score, cx, cy) in enumerate(global_top_markers, 1):
-        ref_crops = [_crop_and_zoom(p, cx, cy, crop_radius, zoom_size) for p in reference_pils]
-        query_crop = _crop_and_zoom(query_pil, cx, cy, crop_radius, zoom_size)
+        m = idx - 1
+        ref_crops = [
+            _crop_and_zoom(p, *locs[m][0], crop_radius, zoom_size, locs[m][1])
+            for p, locs in zip(reference_pils, ref_locations)
+        ]
+        query_crop = _crop_and_zoom(
+            query_pil, *query_locations[m][0], crop_radius, zoom_size, query_locations[m][1]
+        )
 
-        discrepancy_type = _classify_local_discrepancy(skels_ref, skel_query, cx, cy)
-        refs_with_ink = _which_refs_have_ink(reference_gray_images, cx, cy)
+        discrepancy_type = _classify_local_discrepancy(skels_ref_aligned, skel_query, cx, cy)
+        refs_with_ink = [i + 1 for i, locs in enumerate(ref_locations) if locs[m][1] is not None]
         refs_note = (
             f"Present in Ref {', '.join(str(r) for r in refs_with_ink)}"
             if refs_with_ink
@@ -329,6 +533,7 @@ def build_stroke_crop_rows(
                 "caption": caption,
                 "position": (cx, cy),
                 "refs_with_ink": refs_with_ink,
+                "query_has_ink": query_locations[m][1] is not None,
             }
         )
     return rows
@@ -363,9 +568,14 @@ def _generate_bounding_box_visualization(orig_gray_pil: Image.Image) -> np.ndarr
 
 def _generate_stroke_difference_visualization(
     base_pil: Image.Image,
-    global_top_markers: List[tuple[float, int, int]],
+    marker_locations: List[MarkerLocation],
     image_size: int,
 ) -> np.ndarray:
+    """
+    Numbered marker map for one specimen. `marker_locations` come from
+    `_locate_markers()` for this specimen, so arrows point at the
+    corresponding part of *its* signature; the bubble numbering is shared.
+    """
     base_gray = np.asarray(base_pil.convert("L"), dtype=np.uint8)
 
     margin_px = int(image_size * 0.30)
@@ -391,7 +601,7 @@ def _generate_stroke_difference_visualization(
     font = cv2.FONT_HERSHEY_SIMPLEX
     bubble_radius = 13
     min_gap = 2 * bubble_radius + 8
-    raw_bubble_x = [cx + margin_px for _score, cx, _cy in global_top_markers]
+    raw_bubble_x = [anchor[0] + margin_px for anchor, _snapped in marker_locations]
     bubble_x = raw_bubble_x.copy()
     for index in range(1, len(bubble_x)):
         if bubble_x[index] - bubble_x[index - 1] < min_gap:
@@ -407,9 +617,11 @@ def _generate_stroke_difference_visualization(
         bubble_x = [x + shift for x in bubble_x]
     bubble_y = int(margin_px * 0.42)
 
-    for idx, (_score, cx, cy) in enumerate(global_top_markers):
-        ex = cx + margin_px
-        ey = cy + margin_px
+    no_ink_gray = (150, 150, 150)
+
+    for idx, (anchor, point) in enumerate(marker_locations):
+        target = point if point is not None else anchor
+        ex, ey = target[0] + margin_px, target[1] + margin_px
 
         bx = int(bubble_x[idx])
         by = bubble_y
@@ -418,11 +630,13 @@ def _generate_stroke_difference_visualization(
             expanded,
             (bx, by),
             (ex, ey),
-            dark_red,
+            dark_red if point is not None else no_ink_gray,
             thickness=1,
             tipLength=0.05,
             line_type=cv2.LINE_AA,
         )
+        if point is None:
+            cv2.circle(expanded, (ex, ey), 7, no_ink_gray, 1, cv2.LINE_AA)
         cv2.circle(expanded, (bx, by), bubble_radius, dark_red, -1, cv2.LINE_AA)
         cv2.circle(expanded, (bx, by), bubble_radius + 1, white, 1, cv2.LINE_AA)
 
@@ -439,11 +653,11 @@ def _generate_stroke_difference_visualization(
             cv2.LINE_AA,
         )
 
-    legend_y = total_size - 36
+    legend_y = total_size - 52
     cv2.rectangle(expanded, (0, legend_y), (total_size, total_size), (235, 235, 235), -1)
     cv2.putText(
         expanded,
-        f"Markers 1-{len(global_top_markers)}: key discrepancy locations",
+        f"Markers 1-{len(marker_locations)}: key discrepancy locations",
         (6, legend_y + 14),
         font,
         0.32,
@@ -455,6 +669,16 @@ def _generate_stroke_difference_visualization(
         expanded,
         "Same number = same location across all rows",
         (6, legend_y + 30),
+        font,
+        0.32,
+        (40, 40, 40),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        expanded,
+        "Gray ring = no ink in this specimen there",
+        (6, legend_y + 46),
         font,
         0.32,
         (40, 40, 40),
@@ -689,7 +913,7 @@ def _page_stroke_crop_table(rows, title, pdf, page_counter, total_pages, case_id
                 _frame(ax, rp.MUTED if has_ink else rp.BORDER, 1.6 if has_ink else 1.2, dashed=not has_ink)
             axq = _cell_axes(fig, x_img0 + 4 * (img + gap), ry, img, img, W, H)
             axq.imshow(row["query_crop"])
-            _frame(axq, rp.BRAND, 2.6)
+            _frame(axq, rp.BRAND, 2.6, dashed=not row.get("query_has_ink", True))
 
             cap_lines = row["caption"].split("\n")
             header = cap_lines[0].split("-", 1)
@@ -1003,8 +1227,15 @@ class GradCAMService:
                 }
             )
 
+        # Align each reference to the questioned signature before diffing, so
+        # markers reflect real stroke differences rather than shifts in size
+        # or position, and the same marker lands on the same letter everywhere.
         questioned_gray = np.asarray(original_pil_image.convert("L"), dtype=np.uint8)
-        global_top_markers = _compute_global_top_markers(reference_gray_images, questioned_gray)
+        ref_warps = [_estimate_alignment(gray, questioned_gray) for gray in reference_gray_images]
+        aligned_ref_grays = [
+            _warp_reference(gray, warp) for gray, warp in zip(reference_gray_images, ref_warps)
+        ]
+        global_top_markers = _compute_global_top_markers(aligned_ref_grays, questioned_gray)
         if not global_top_markers:
             global_top_markers = [
                 (
@@ -1014,9 +1245,21 @@ class GradCAMService:
                 )
             ]
 
+        skel_query = _get_skeleton(questioned_gray)
+        query_locations = _locate_markers(questioned_gray, global_top_markers, skeleton=skel_query)
+        ref_locations = [
+            _locate_markers(
+                gray,
+                global_top_markers,
+                warp=warp,
+                x_map=_column_correspondence(questioned_gray, aligned),
+            )
+            for gray, warp, aligned in zip(reference_gray_images, ref_warps, aligned_ref_grays)
+        ]
+
         questioned_stroke_diff = _generate_stroke_difference_visualization(
             original_pil_image,
-            global_top_markers,
+            query_locations,
             self._settings.MODEL_INPUT_SIZE,
         )
 
@@ -1025,8 +1268,8 @@ class GradCAMService:
         all_blends = [item["blend"] for item in reference_visuals] + [questioned_blend]
         all_bboxes = [item["bbox"] for item in reference_visuals] + [questioned_bbox]
         all_stroke_diffs = [
-            _generate_stroke_difference_visualization(item["orig"], global_top_markers, self._settings.MODEL_INPUT_SIZE)
-            for item in reference_visuals
+            _generate_stroke_difference_visualization(item["orig"], locations, self._settings.MODEL_INPUT_SIZE)
+            for item, locations in zip(reference_visuals, ref_locations)
         ] + [questioned_stroke_diff]
 
         exported_files = export_individual_visuals(
@@ -1048,15 +1291,14 @@ class GradCAMService:
         ]
 
         # Per-marker stroke-difference crop table for the compiled PDF.
-        skel_query = _get_skeleton(questioned_gray)
-        skels_ref = [_get_skeleton(gray) for gray in reference_gray_images]
         stroke_crop_rows = build_stroke_crop_rows(
-            reference_gray_images=reference_gray_images,
             reference_pils=reference_pils_only,
             query_pil=original_pil_image,
             skel_query=skel_query,
-            skels_ref=skels_ref,
+            skels_ref_aligned=[_get_skeleton(gray) for gray in aligned_ref_grays],
             global_top_markers=global_top_markers,
+            ref_locations=ref_locations,
+            query_locations=query_locations,
         )
 
         if forensic_findings is None:

@@ -955,7 +955,7 @@ def export_compiled_pdf(
     finding_visuals: Optional[dict] = None,
 ) -> str:
     """
-    Assemble the compiled report PDF (Letter, Arial, AVERA brand colour):
+    Assemble the compiled report PDF (Letter, Sora, AVERA brand colour):
     cover, case summary, forensic findings (F1-F7 cards), visual evidence
     (signatures, Grad-CAM, overlay, bounding box, stroke map, stroke table),
     explanation + glossary, disclaimer.

@@ -110,9 +110,20 @@ Run the full signature verification pipeline.
   "confidence_forged": 5.75,
   "distance": 0.214562,
   "threshold": 0.6851,
-  "gradcam_blob_id": "gradcam-output/Case_001/a3f9c12d8b4e.png"
+  "gradcam_blob_ids": [
+    "Case 001/genuine_1/ref1_original.png",
+    "Case 001/genuine_1/ref1_heatmap.png",
+    "...",
+    "Case 001/suspected/questioned_stroke_diff.png",
+    "Case 001/output.pdf"
+  ],
+  "uploaded_blobs_ids": ["(same list, kept for older callers)"]
 }
 ```
+
+Per image (each reference and the questioned signature) the service uploads
+`_original`, `_heatmap`, `_overlay`, `_bbox` and `_stroke_diff` PNGs, plus one
+compiled `output.pdf` report per case. F1-F7 appear only in the PDF.
 
 **Error Responses**
 | Status | Meaning |

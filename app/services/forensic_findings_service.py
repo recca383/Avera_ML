@@ -1,8 +1,8 @@
 """
 Forensic findings service (F1-F7).
 
-Computes the seven examiner-style findings described in Chapter 3 and returns
-them in the exact shape `gradcam_service.export_compiled_pdf(forensic_findings=...)`
+Computes the seven examiner-style findings F1-F7 and returns them in the exact
+shape `gradcam_service.export_compiled_pdf(forensic_findings=...)`
 reads:
 
     {
@@ -15,8 +15,9 @@ F1-F4 and F7 use classical image processing (OpenCV / scikit-image, incl. the
 Zhang-Suen skeleton). F5 and F6 use the trained model's embedding space.
 
 The comparison tolerances (see THRESHOLDS) are statistically calibrated on the
-Pipeline 32 validation split so that at most ~5% of genuine questioned
-signatures are flagged per finding (docs/forensic_calibration_final.json).
+Pipeline 32 validation split so that each finding flags at most ~5% of genuine
+questioned signatures (values and test results in
+docs/forensic_calibration_final.json).
 They are calibrated against data, not validated by a forensic examiner; the
 PDF disclaimer still applies.
 
@@ -35,9 +36,10 @@ from PIL import Image
 from skimage.morphology import skeletonize
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-# Calibrated on Pipeline 32 validation split: each tolerance = 95th percentile
-# over genuine questioned signatures (≤5% genuine flagged).
-# See docs/forensic_calibration_final.json.
+# Calibrated on the Pipeline 32 validation split: each tolerance is the 95th
+# percentile of its statistic over genuine questioned signatures (<=5% genuine
+# flagged). F7 combines two checks, so each of its two tolerances is set at the
+# 97.5th percentile. Values and test results: docs/forensic_calibration_final.json.
 THRESHOLDS = {
     "min_component_area": 12,       # px; ignore specks smaller than this
     "dot_max_area": 45,             # px; a component this small (and roundish) = terminal dot
@@ -69,7 +71,7 @@ def _ink_mask(gray: np.ndarray) -> np.ndarray:
 
 
 def _skeleton(mask: np.ndarray) -> np.ndarray:
-    """1-px centerline via Zhang-Suen thinning (as stated in Chapter 3)."""
+    """1-px centerline via Zhang-Suen thinning."""
     return skeletonize(mask, method="zhang")
 
 
@@ -191,7 +193,7 @@ def _plain_sentences(
     f2_label: str, q_ang: float, r_ang_mean: float,
     f3_label: str, ratio3: float,
     f4_label: str, q_ratio: float, r_ratio: float,
-    pct: float, f6_label: str,
+    pct: float, f5_label: str, f6_label: str,
     f7_label: str, q7: Dict[str, float], r_dark: float, r_wv: float, dark_ok: bool, wv_ok: bool,
 ) -> Dict[str, str]:
     """One everyday-language sentence per finding, for readers without forensic training."""
@@ -228,7 +230,7 @@ def _plain_sentences(
 
     if not math.isfinite(pct):
         f5 = "The AI model's distance could not be compared with its limit."
-    elif pct <= 100:
+    elif f5_label in ("Well within threshold", "Within threshold"):
         f5 = f"The AI model sees this signature as close to the references: {pct:.0f}% of the way to its limit."
     else:
         f5 = f"The AI model sees this signature as far from the references: {pct:.0f}% of its limit."
@@ -342,9 +344,10 @@ def compute_forensic_findings(
 
     # ---- F5 Variation (model distance vs. threshold) ---------------------------
     pct = 100.0 * distance / threshold if threshold > 0 else float("inf")
+    # "Within" uses the same strict test as the verdict (GENUINE iff distance < threshold).
     if pct <= 75:
         f5_label = "Well within threshold"
-    elif pct <= 100:
+    elif distance < threshold:
         f5_label = "Within threshold"
     elif pct <= 150:
         f5_label = "Exceeds threshold"
@@ -445,7 +448,7 @@ def compute_forensic_findings(
 
     plain = _plain_sentences(
         f1_label, f1_counts, f2_label, q_ang, float(r_ang.mean()), f3_label, ratio3,
-        f4_label, q4["ratio"], r_ratio, pct, f6_label, f7_label, q7, r_dark, r_wv, dark_ok, wv_ok,
+        f4_label, q4["ratio"], r_ratio, pct, f5_label, f6_label, f7_label, q7, r_dark, r_wv, dark_ok, wv_ok,
     )
 
     def _r(x: Optional[float], nd: int = 4) -> Any:

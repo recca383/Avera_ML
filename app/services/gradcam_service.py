@@ -11,10 +11,23 @@ report_pages.py):
     Cover page
     Case Summary (verdict, F1-F7 at a glance, plain-language sentences)
     Forensic Findings (one F1-F7 card each, flowing over as many pages as needed)
-    Visual Evidence (signatures, Grad-CAM overlay, overlay comparison,
-                     ink bounding box, stroke map, per-marker stroke-difference table)
+    Visual Evidence (signatures, Grad-CAM heatmaps [headed "Visual Aid"], overlay
+                     comparison, ink bounding box, stroke map, per-marker stroke-difference table)
     Understanding This Report + Glossary
     Disclaimer
+
+Grad-CAM target
+---------------
+The heatmaps explain the verification decision itself. The explained score is
+the decision distance used by InferenceService:
+
+    prototype = L2-normalise(mean of the reference embeddings)   (no gradient)
+    score     = || L2-normalise(embedding(questioned)) - prototype ||_2
+
+Grad-CAM backpropagates this score to TARGET_LAYER_NAME, so after its ReLU the
+heatmap shows the regions that pushed the questioned signature further from the
+writer's references. Each reference's own heatmap uses the same score with that
+reference left out of the prototype (its distance to the other references).
 
 The Grad-CAM page renders the heatmap blended over the actual signature
 (the same array used for the individual "_heatmap.png" export), not the
@@ -31,7 +44,7 @@ import asyncio
 import math
 import os
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -989,11 +1002,12 @@ def export_compiled_pdf(
                    orig_pils, image_labels,
                    "Compare overall shape, size, slant and pen pressure by eye first. The pages that follow "
                    "show where AVERA found differences.", cmap="gray")
-        _page_grid(pdf, page_counter, total_pages, case_id, section, "Grad-CAM Attention Heatmaps",
-                   "Where the AI model paid attention when comparing the signatures",
+        _page_grid(pdf, page_counter, total_pages, case_id, "Visual Aid", "Grad-CAM Attention Heatmaps",
+                   "Regions that most increased the distance from this writer's references",
                    blends, image_labels,
-                   "Warm colors (red, yellow) mark areas that influenced the model most; cool colors (blue) "
-                   "influenced it least. This explains the model's focus. It is not proof of forgery on its own.")
+                   "Warm colours mark regions that made the questioned signature less similar to the references "
+                   "(for each reference: less similar to the other three). Blank areas can be warm where an "
+                   "expected stroke is missing. This is a visual aid, not proof of forgery.")
         _page_grid(pdf, page_counter, total_pages, case_id, section, "Overlay Comparison",
                    "The questioned signature laid over each reference signature",
                    overlay_comparisons, ["Versus Reference 1", "Versus Reference 2",
@@ -1180,7 +1194,10 @@ class GradCAMService:
 
         tensor = questioned_tensor.to(device=actual_device, dtype=model_dtype)
 
-        cam_fullres = self._compute_gradcam(tensor)
+        # Explain the verdict: distance from the questioned signature to the
+        # prototype of all references (same as InferenceService).
+        prototype = self._reference_prototype(reference_tensors)
+        cam_fullres = self._compute_gradcam(tensor, prototype)
         if cam_fullres is None:
             logger.warning("Grad-CAM computation failed; returning zero map", case_name=case_name)
             cam_fullres = np.zeros(
@@ -1211,7 +1228,12 @@ class GradCAMService:
             ref_gray = np.asarray(ref_pil.convert("L"), dtype=np.uint8)
             reference_gray_images.append(ref_gray)
 
-            ref_cam = self._compute_gradcam(ref_tensor)
+            # Leave-one-out: this reference's distance to the prototype of the
+            # other references. With a single reference there are no others, so
+            # its distance to the questioned signature is explained instead.
+            others = [t for j, t in enumerate(reference_tensors) if j != idx]
+            ref_prototype = self._reference_prototype(others or [tensor])
+            ref_cam = self._compute_gradcam(ref_tensor, ref_prototype)
             if ref_cam is None:
                 ref_cam = np.zeros((self._settings.MODEL_INPUT_SIZE, self._settings.MODEL_INPUT_SIZE), dtype=np.float32)
 
@@ -1408,8 +1430,45 @@ class GradCAMService:
         finally:
             model.train(was_training)
 
-    def _compute_gradcam(self, tensor: torch.Tensor) -> Optional[np.ndarray]:
-        """Compute the Grad-CAM activation map (full resolution 224x224)."""
+    @staticmethod
+    def _reference_prototype(reference_tensors: List[torch.Tensor]) -> Optional[torch.Tensor]:
+        """
+        (1, D) prototype of the references, computed exactly as InferenceService
+        does: mean of the reference embeddings, then L2-normalise. No gradient
+        flows through it. Returns None when there are no references.
+        """
+        if not reference_tensors:
+            return None
+        model = get_model()
+        p = next(model.parameters())
+        batch = torch.cat(
+            [t.unsqueeze(0) if t.dim() == 3 else t for t in reference_tensors], dim=0
+        ).to(device=p.device, dtype=p.dtype)
+        with torch.no_grad():
+            mean_embedding = model.get_embedding(batch).mean(dim=0, keepdim=True)
+            return F.normalize(mean_embedding, p=2, dim=1).detach()
+
+    def _compute_gradcam(self, tensor: torch.Tensor, prototype: Optional[torch.Tensor]) -> Optional[np.ndarray]:
+        """
+        Grad-CAM map (full resolution 224x224) explaining the distance between
+        `tensor` and `prototype` (see the module docstring). Returns None when
+        there is no prototype or the layer/gradients are unavailable.
+        """
+        return self._gradcam_with_score(tensor, prototype)[0]
+
+    def _gradcam_with_score(
+        self, tensor: torch.Tensor, prototype: Optional[torch.Tensor]
+    ) -> Tuple[Optional[np.ndarray], Optional[float]]:
+        """
+        Grad-CAM for the decision distance. Returns (cam, score), where score is
+        || L2-normalise(embedding(tensor)) - prototype ||_2, the value that was
+        backpropagated (equal to InferenceService's verdict distance when the
+        prototype is built from the same references).
+        """
+        if prototype is None:
+            logger.warning("No reference prototype; Grad-CAM unavailable")
+            return None, None
+
         model = get_model()
         first_param = next(model.parameters())
         actual_device = first_param.device
@@ -1429,10 +1488,12 @@ class GradCAMService:
         def backward_hook(module, _grad_input, grad_output):  # noqa: ANN001
             gradients.append(grad_output[0].detach())
 
+        prototype = prototype.to(device=actual_device, dtype=model_dtype).detach()
+
         target_layer = self._find_layer(model, TARGET_LAYER_NAME)
         if target_layer is None:
             logger.warning("Target layer not found; Grad-CAM unavailable", target_layer=TARGET_LAYER_NAME)
-            return None
+            return None, None
 
         fwd_handle = target_layer.register_forward_hook(forward_hook)
         bwd_handle = target_layer.register_full_backward_hook(backward_hook)
@@ -1443,13 +1504,17 @@ class GradCAMService:
             tensor.requires_grad_(True)
 
             with torch.enable_grad():
-                embedding = model.get_embedding(tensor)
-                score = embedding.sum()
+                q = F.normalize(model.get_embedding(tensor), p=2, dim=1)
+                score = torch.norm(q - prototype, p=2)
+                score_value = float(score.item())
+                if score_value < 1e-8:
+                    # Identical embeddings: the distance has no usable gradient.
+                    return None, score_value
                 model.zero_grad()
                 score.backward()
 
             if not activations or not gradients:
-                return None
+                return None, score_value
 
             acts = activations[0]
             grads = gradients[0]
@@ -1471,7 +1536,7 @@ class GradCAMService:
                 )
             ) / 255.0
 
-            return cam_fullres.astype(np.float32)
+            return cam_fullres.astype(np.float32), score_value
 
         finally:
             fwd_handle.remove()

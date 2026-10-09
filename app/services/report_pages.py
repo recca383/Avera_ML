@@ -174,21 +174,21 @@ def text(fig, x, y, s, size=9.0, color=TEXT, weight="normal", ha="left", va="bas
 # hinting from inflating widths (at 72 dpi lines measured ~8% too long).
 _MEASURE_DPI = 300
 _MEASURE_FIG = Figure(figsize=(8.5, 11), dpi=_MEASURE_DPI)
-FigureCanvasAgg(_MEASURE_FIG)
+_MEASURE_CANVAS = FigureCanvasAgg(_MEASURE_FIG)   # typed Agg canvas, so get_renderer() is known
 
 
 @lru_cache(maxsize=8192)
 def text_width_pt(s: str, size: float, weight: str = "normal") -> float:
     """Width in points of `s` set in the report font."""
     prop = FontProperties(family=FONT, size=size, weight=weight)
-    w, _, _ = _MEASURE_FIG.canvas.get_renderer().get_text_width_height_descent(s, prop, ismath=False)
+    w, _, _ = _MEASURE_CANVAS.get_renderer().get_text_width_height_descent(s, prop, ismath=False)
     return w * 72.0 / _MEASURE_DPI
 
 
 @lru_cache(maxsize=256)
 def _line_layout_in(size: float, spacing: float, weight: str) -> Tuple[float, float]:
     """(height of one line, step per extra line) in inches, as matplotlib lays them out."""
-    renderer = _MEASURE_FIG.canvas.get_renderer()
+    renderer = _MEASURE_CANVAS.get_renderer()
     heights = []
     for n in (1, 2):
         t = _MEASURE_FIG.text(0, 0, "\n".join(["lp"] * n), fontsize=size, fontweight=weight,
@@ -379,8 +379,8 @@ def text_width_in(fig, t) -> float:
     return t.get_window_extent(renderer=fig.canvas.get_renderer()).width / fig.dpi
 
 
-def strength_badge(fig, x, y, code: str, suffix: str = " evidence", size: float = TYPE_LABEL) -> None:
-    """Plain-language evidence strength label, left-aligned at x."""
+def strength_badge(fig, x, y, code: str, suffix: str = " visual aid", size: float = TYPE_LABEL) -> None:
+    """Plain-language aid-strength label (e.g. "Strong visual aid"), left-aligned at x."""
     s = strength(code)
     if s is None:
         text(fig, x, y, "Decides the result", size, MUTED, "bold", va="center")
@@ -580,7 +580,7 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
     # Column positions follow the widest entry in each column, so longer labels never collide.
     name_w = max(text_width_pt(FINDING_NAMES[c], 9, "bold") for c in FINDING_ORDER) / 72.0
     chip_w = max(text_width_pt(key.get(f"{c}_label", "N/A"), 7.5, "bold") for c in FINDING_ORDER) / 72.0 + 0.28
-    str_w = max(text_width_pt("Evidence strength", 8, "bold"), text_width_pt("Decides the result", 7.5, "bold")) / 72.0
+    str_w = max(text_width_pt("Aid strength", 8, "bold"), text_width_pt("Decides the result", 7.5, "bold")) / 72.0
     cols = {"code": MX + 0.010, "name": MX + 0.055}
     cols["chip"] = cols["name"] + (name_w + 0.18) / W
     cols["str"] = cols["chip"] + (chip_w + 0.18) / W
@@ -592,7 +592,7 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
     text(fig, cols["code"], y - hh / 2, "Code", 8, MUTED, "bold", va="center")
     text(fig, cols["name"], y - hh / 2, "Finding", 8, MUTED, "bold", va="center")
     text(fig, cols["chip"], y - hh / 2, "Result", 8, MUTED, "bold", va="center")
-    text(fig, cols["str"], y - hh / 2, "Evidence strength", 8, MUTED, "bold", va="center")
+    text(fig, cols["str"], y - hh / 2, "Aid strength", 8, MUTED, "bold", va="center")
     text(fig, cols["track"], yh, "Distance from normal", 8, MUTED, "bold", va="center")
     yt = y - 0.33 / H
     text(fig, cols["track"], yt, "0", 7, MUTED, va="center")
@@ -603,7 +603,7 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
     # Fit the page: everything below the table must stay above the footer. Rows
     # shrink first, then the "In plain words" type, then the closing line goes.
     notes = ("Distance from normal: 0 is typical for this writer and the green zone is the normal range "
-             "(for F5, the model's threshold). Evidence strength: how well each check told genuine from forged "
+             "(for F5, the model's threshold). Aid strength: how well each check told genuine from forged "
              "signatures in testing; the strongest checks deserve the most weight.")
     plain = findings.get("plain", {}) or {}
     order = [c for c in sorted(FINDING_ORDER, key=lambda c: (c != "f5", -(strength(c) or (0,))[0]))
@@ -821,7 +821,7 @@ _HOW_TO_READ_NOTES = [
     "Bars: the green zone is what counts as normal for this writer, the blue band is the range seen in "
     "the four references, and the marker is the questioned signature. A marker inside the green zone is "
     "normal variation even if it sits outside the blue band.",
-    "Evidence strength shows how well that check told genuine from forged signatures when tested on "
+    "Aid strength shows how well that check told genuine from forged signatures when tested on "
     "signatures the system had never seen. A weak check is easily fooled, so give it less weight than "
     "a strong one.",
     "Pictures: the reference shown is the most typical of the four. F5 and F6 both use the AI model: F5 "
@@ -881,8 +881,8 @@ def page_explanation(pdf, page_counter, total_pages, case_id) -> None:
          "smoothness and ink. F6 uses the model to compare the questioned signature with the writer's own "
          "natural variation. These checks add context but do not change the model result."),
         ("What the visual pages show",
-         "The Grad-CAM heatmap shows where the model paid the most attention. It explains the model, and is "
-         "not proof of forgery on its own. The overlay, bounding box and stroke map are direct comparisons of "
+         "The Grad-CAM heatmap marks the regions that most increased the model's distance from the writer's "
+         "references. It is a visual aid that explains the model, not proof of forgery. The overlay, bounding box and stroke map are direct comparisons of "
          "the ink and are closer to traditional document examination."),
     ]
     tw = CONTENT_W * W
@@ -900,10 +900,10 @@ def page_explanation(pdf, page_counter, total_pages, case_id) -> None:
         ("Baseline", "The invisible line a signature is written along. Its slope is the baseline angle."),
         ("Threshold", "The distance limit the model uses to separate 'same writer' from 'different writer'."),
         ("Distance", "How far apart two signatures are according to the model. Lower means more similar."),
-        ("Grad-CAM", "A heatmap showing which parts of the signature the model relied on most."),
+        ("Grad-CAM", "A heatmap marking the regions that most increased the distance from the references."),
         ("Normal range", "The green zone on each bar: how much this writer's signatures can vary and still "
                          "count as consistent."),
-        ("Evidence strength", "How well a check told genuine from forged signatures in testing. Weak checks "
+        ("Aid strength", "How well a check told genuine from forged signatures in testing. Weak checks "
                               "are easily fooled; strong ones deserve more weight."),
     ]
     hline(fig, MX, 1 - MX, y, INK, 1.0)
@@ -934,12 +934,12 @@ def page_disclaimer(pdf, page_counter, total_pages, case_id) -> None:
         "on new signatures some checks flag genuine signatures more often than that. A flagged check is a "
         "prompt for closer review, not proof of forgery. These cut-offs have not been validated against a "
         "licensed forensic document examiner's judgment.",
-        "This report is a decision-support and explainability aid. It summarizes computational evidence to help "
+        "This report is a decision-support and explainability aid. It summarizes computed visual aids to help "
         "a human examiner reason about a case. It is not a substitute for review and certification by a "
         "qualified, licensed Questioned Document Examiner, and should not be submitted as standalone evidence "
         "in any legal or administrative proceeding.",
         "Results can vary with scan or photo quality, signature complexity, and the writer's natural "
-        "variability. A result reflects the balance of computed evidence at the time of analysis and does not "
+        "variability. A result reflects the balance of computed results at the time of analysis and does not "
         "express certainty.",
         "This system and report are intended to support careful review of signature evidence.",
     ]

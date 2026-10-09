@@ -185,6 +185,74 @@ def embed_tensors(tensors: Sequence[Any]) -> np.ndarray:
     return np.stack(outs, axis=0)
 
 
+# ── Plain-language summaries ──────────────────────────────────────────────────
+def _plain_sentences(
+    f1_label: str, f1_counts: Dict[str, Dict[str, int]],
+    f2_label: str, q_ang: float, r_ang_mean: float,
+    f3_label: str, ratio3: float,
+    f4_label: str, q_ratio: float, r_ratio: float,
+    pct: float, f6_label: str,
+    f7_label: str, q7: Dict[str, float], r_dark: float, r_wv: float, dark_ok: bool, wv_ok: bool,
+) -> Dict[str, str]:
+    """One everyday-language sentence per finding, for readers without forensic training."""
+    names = {"strokes": "separate strokes", "bowls": "closed loops", "dots": "dots", "pen_lifts": "pen lifts"}
+    if f1_label == "Consistent":
+        f1 = "Built from the same pieces as the references: the number of strokes, loops and dots is normal for this writer."
+    else:
+        off = [k for k, c in f1_counts.items() if not c["ok_lo"] <= c["q"] <= c["ok_hi"]]
+        k = off[0] if off else "strokes"
+        c = f1_counts[k]
+        ref = f"{c['min']}" if c["min"] == c["max"] else f"{c['min']} to {c['max']}"
+        f1 = f"Built differently: it has {c['q']} {names[k]}, where the references have {ref}."
+
+    diff = q_ang - r_ang_mean
+    if f2_label == "Consistent":
+        f2 = "The signature runs at the same slope as the references."
+    else:
+        f2 = (f"The signature runs {abs(diff):.0f} degrees more {'upward' if diff > 0 else 'downward'} "
+              f"than this writer's signatures usually do.")
+
+    if f3_label == "Less smooth":
+        f3 = (f"The pen line is shakier than in the references (about {ratio3:.1f} times the wobble), "
+              f"which can happen when a signature is drawn slowly to copy it.")
+    elif f3_label == "Smoother":
+        f3 = "The pen line is smoother than in the references."
+    else:
+        f3 = "The pen line is about as smooth as in the references."
+
+    if f4_label == "Consistent":
+        f4 = f"The overall shape has the same proportions as the references (about {q_ratio:.1f} times wider than tall)."
+    else:
+        f4 = (f"The signature is {'wider' if q_ratio > r_ratio else 'narrower'} for its height than the references: "
+              f"{q_ratio:.1f} times wider than tall, versus {r_ratio:.1f} on average.")
+
+    if not math.isfinite(pct):
+        f5 = "The AI model's distance could not be compared with its limit."
+    elif pct <= 100:
+        f5 = f"The AI model sees this signature as close to the references: {pct:.0f}% of the way to its limit."
+    else:
+        f5 = f"The AI model sees this signature as far from the references: {pct:.0f}% of its limit."
+
+    if f6_label == "N/A":
+        f6 = "The writer's natural variation could not be measured for this case."
+    elif f6_label == "Within natural range":
+        f6 = "It differs from the references no more than the writer's own genuine signatures differ from each other."
+    else:
+        f6 = "It differs from the references more than the writer's own genuine signatures differ from each other."
+
+    if f7_label == "Consistent":
+        f7 = "The ink looks as dark, and the line width varies as much, as in the references."
+    else:
+        parts = []
+        if not dark_ok:
+            parts.append(f"the ink is {'darker' if q7['darkness'] > r_dark else 'lighter'}")
+        if not wv_ok:
+            parts.append(f"the line width varies {'more' if q7['width_var'] > r_wv else 'less'}")
+        f7 = "Compared with the references, " + " and ".join(parts) + ", which can point to different pen pressure."
+
+    return {"f1": f1, "f2": f2, "f3": f3, "f4": f4, "f5": f5, "f6": f6, "f7": f7}
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 def compute_forensic_findings(
     reference_images: Sequence[Image.Image | np.ndarray],
@@ -326,24 +394,67 @@ def compute_forensic_findings(
         f"{r_wv:.2f}. Pen pressure cannot be measured directly from an image, so this is an estimate."
     )
 
+    # ---- Presentation data (does not affect any label above) -------------------
+    # ok_lo / ok_hi: the zone each rule accepts as normal. deviation: how far the
+    # questioned value sits from the centre of that zone, where 1.0 is its edge,
+    # so every check can be drawn on one common scale. Each formula mirrors the
+    # rule above, so deviation <= 1 exactly when the check is "Consistent".
+    for c in f1_counts.values():
+        c["ok_lo"], c["ok_hi"] = c["min"] - c["tol"], c["max"] + c["tol"]
+    f1_dev = max(
+        abs(c["q"] - (c["min"] + c["max"]) / 2) / ((c["max"] - c["min"]) / 2 + c["tol"])
+        for c in f1_counts.values()
+    )
+    ln_c3, ln_w7 = math.log(T["curvature_ratio"]), math.log(T["width_var_ratio"])
+    f6_ok_hi = f6_max * T["natural_range_margin"] if f6_max is not None else None
+    if f6_ok_hi is not None and q_to_ref is not None and f6_mean is not None:
+        f6_dev: Optional[float] = max(0.0, q_to_ref - f6_mean) / max(f6_ok_hi - f6_mean, 1e-9)
+    else:
+        f6_dev = None
+    deviation = {
+        "f1": f1_dev,
+        "f2": ang_diff / max(tol, 1e-9),
+        "f3": abs(math.log(max(ratio3, 1e-9))) / ln_c3,
+        "f4": rel / T["ratio_tolerance"],
+        "f5": distance / threshold if threshold > 0 else None,
+        "f6": f6_dev,
+        "f7": max(dark_rel / T["darkness_tolerance"], abs(math.log(max(wv_ratio, 1e-9))) / ln_w7),
+    }
+
     ranges = {
         "f1": f1_counts,
-        "f2": {"q": q_ang, "min": float(r_ang.min()), "max": float(r_ang.max())},
-        "f3": {"q": q_var, "min": float(r_var.min()), "max": float(r_var.max())},
-        "f4": {"q": q4["ratio"], "min": float(min(r_ratios)), "max": float(max(r_ratios))},
+        "f2": {"q": q_ang, "min": float(r_ang.min()), "max": float(r_ang.max()),
+               "mean": float(r_ang.mean()), "ok_lo": float(r_ang.mean()) - tol,
+               "ok_hi": float(r_ang.mean()) + tol},
+        "f3": {"q": q_var, "min": float(r_var.min()), "max": float(r_var.max()), "mean": ref_mean_var,
+               "ok_lo": ref_mean_var / T["curvature_ratio"], "ok_hi": ref_mean_var * T["curvature_ratio"]},
+        "f4": {"q": q4["ratio"], "min": float(min(r_ratios)), "max": float(max(r_ratios)), "mean": r_ratio,
+               "ok_lo": r_ratio * (1 - T["ratio_tolerance"]), "ok_hi": r_ratio * (1 + T["ratio_tolerance"])},
         "f5": {"distance": float(distance), "threshold": float(threshold)},
-        "f6": {"q": q_to_ref, "min": f6_min, "max": f6_max, "mean": f6_mean},
+        "f6": {"q": q_to_ref, "min": f6_min, "max": f6_max, "mean": f6_mean,
+               "ok_lo": 0.0 if f6_ok_hi is not None else None, "ok_hi": f6_ok_hi,
+               "pairs": pair if f6_max is not None else []},
         "f7_darkness": {"q": q7["darkness"], "min": float(min(x["darkness"] for x in r7)),
-                        "max": float(max(x["darkness"] for x in r7))},
+                        "max": float(max(x["darkness"] for x in r7)), "mean": r_dark,
+                        "ok_lo": r_dark * (1 - T["darkness_tolerance"]),
+                        "ok_hi": r_dark * (1 + T["darkness_tolerance"])},
         "f7_width": {"q": q7["width_var"], "min": float(min(x["width_var"] for x in r7)),
-                     "max": float(max(x["width_var"] for x in r7))},
+                     "max": float(max(x["width_var"] for x in r7)), "mean": r_wv,
+                     "ok_lo": r_wv / T["width_var_ratio"], "ok_hi": r_wv * T["width_var_ratio"]},
     }
+
+    plain = _plain_sentences(
+        f1_label, f1_counts, f2_label, q_ang, float(r_ang.mean()), f3_label, ratio3,
+        f4_label, q4["ratio"], r_ratio, pct, f6_label, f7_label, q7, r_dark, r_wv, dark_ok, wv_ok,
+    )
 
     def _r(x: Optional[float], nd: int = 4) -> Any:
         return "N/A" if x is None else round(float(x), nd)
 
     return {
         "ranges": ranges,
+        "deviation": deviation,
+        "plain": plain,
         "key_findings": {
             "f1_label": f1_label, "f2_label": f2_label, "f3_label": f3_label,
             "f4_label": f4_label, "f5_label": f5_label, "f6_label": f6_label,

@@ -50,8 +50,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.ml.model_loader import get_model
 from app.services import report_pages as rp
-
-from app.services import report_pages as rp
+from app.services.finding_visuals import build_finding_visuals
 from app.services.forensic_findings_service import (
     compute_forensic_findings,
     embed_tensors,
@@ -953,6 +952,7 @@ def export_compiled_pdf(
     results_dir: str,
     model_version_tag: str = "AVERA SNN",
     forensic_findings: Optional[dict] = None,
+    finding_visuals: Optional[dict] = None,
 ) -> str:
     """
     Assemble the compiled report PDF (Letter, Arial, AVERA brand colour):
@@ -962,6 +962,8 @@ def export_compiled_pdf(
 
     `blends` must be the heatmap-over-signature arrays (see `_build_heatmap_overlay`).
     `forensic_findings` is the dict from forensic_findings_service.compute_forensic_findings.
+    `finding_visuals` is the dict from finding_visuals.build_finding_visuals (optional;
+    cards fall back to numbers only without it).
     """
     os.makedirs(results_dir, exist_ok=True)
     compiled_pdf_path = os.path.join(results_dir, f"output.pdf")
@@ -969,8 +971,9 @@ def export_compiled_pdf(
 
     rows_per_page_stroke_table = 3
     stroke_table_pages = -(-max(len(stroke_crop_rows), 1) // rows_per_page_stroke_table)
-    # cover + summary + 2 findings + 5 visual grids + explanation + disclaimer = 11
-    total_pages = 11 + (stroke_table_pages if stroke_crop_rows else 0)
+    findings_pages = rp.plan_findings_pages(forensic_findings, finding_visuals)
+    # cover + summary + findings pages + 5 visual grids + explanation + disclaimer
+    total_pages = 9 + len(findings_pages) + (stroke_table_pages if stroke_crop_rows else 0)
     page_counter = [0]
 
     logger.info("Building compiled PDF", path=compiled_pdf_path, total_pages=total_pages)
@@ -980,8 +983,9 @@ def export_compiled_pdf(
                       avg_distance, threshold, query_image_name, ref_image_names, model_version_tag)
         rp.page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance, threshold,
                         forensic_findings)
-        rp.page_findings(pdf, page_counter, total_pages, case_id, forensic_findings, part=1)
-        rp.page_findings(pdf, page_counter, total_pages, case_id, forensic_findings, part=2)
+        for i, codes in enumerate(findings_pages):
+            rp.page_findings(pdf, page_counter, total_pages, case_id, forensic_findings, codes,
+                             visuals=finding_visuals, first=i == 0, last=i == len(findings_pages) - 1)
 
         section = "Visual Evidence"
         _page_grid(pdf, page_counter, total_pages, case_id, section, "Signature Overview",
@@ -1316,6 +1320,13 @@ class GradCAMService:
             
         case_id = safe_case or case_name
 
+        finding_visuals = None
+        try:
+            finding_visuals = build_finding_visuals(reference_pils_only, original_pil_image)
+        except Exception as exc:
+            logger.exception("Finding illustrations failed; cards will show numbers only",
+                             case_name=case_name, error=str(exc))
+
         pdf_path = export_compiled_pdf(
             case_id=case_id,
             verdict=verdict,
@@ -1334,6 +1345,7 @@ class GradCAMService:
             results_dir=export_dir,
             model_version_tag=model_version_tag,
             forensic_findings=forensic_findings,
+            finding_visuals=finding_visuals,
         )
 
         exported_files.append(pdf_path)

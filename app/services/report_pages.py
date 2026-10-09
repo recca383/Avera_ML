@@ -250,25 +250,134 @@ def distance_gauge(fig, x, y, w, distance: float, threshold: float, color: str, 
 
 
 def range_bar(fig, x, y, w, value: Optional[float], ref_min: Optional[float], ref_max: Optional[float],
-              color: str, fmt: str = "{:.2f}", caption: str = "") -> None:
-    """Blue band = writer's reference range; marker = questioned signature."""
+              color: str, fmt: str = "{:.2f}", ok_lo: Optional[float] = None,
+              ok_hi: Optional[float] = None) -> None:
+    """
+    Green zone = what the rule accepts as normal for this writer; blue band =
+    the range actually seen in the references; marker = questioned signature.
+    The green zone matters because a marker just outside the blue band can
+    still be normal variation.
+    """
     W, H = _size(fig)
     if value is None or ref_min is None or ref_max is None:
         text(fig, x, y, "Not available", 8, MUTED, va="center")
         return
-    lo, hi = min(ref_min, value), max(ref_max, value)
+    if ok_lo is not None and ok_hi is not None:
+        # Colour by this bar's own zone: a card can combine several measures
+        # (F7), and one can be normal while the card as a whole differs.
+        color = OK if ok_lo <= value <= ok_hi else WARN
+    pts = [value, ref_min, ref_max] + [v for v in (ok_lo, ok_hi) if v is not None]
+    lo, hi = min(pts), max(pts)
     span = (hi - lo) or max(abs(hi), 1.0) * 0.2
-    dom_lo, dom_hi = lo - span * 0.35, hi + span * 0.35
+    dom_lo, dom_hi = lo - span * 0.12, hi + span * 0.12
     px = lambda v: x + w * ((v - dom_lo) / (dom_hi - dom_lo))
-    th = 0.15 / H
+    th = 0.16 / H
     rect(fig, x, y - th / 2, w, th, SURFACE, BORDER, 0.8)
-    rect(fig, px(ref_min), y - th / 2, max(px(ref_max) - px(ref_min), 0.004), th, BRAND_LIGHT, BRAND, 0.8)
+    if ok_lo is not None and ok_hi is not None:
+        rect(fig, px(ok_lo), y - th / 2, px(ok_hi) - px(ok_lo), th, OK_FILL, "none", z=1)
+    bh = th * 0.5
+    rect(fig, px(ref_min), y - bh / 2, max(px(ref_max) - px(ref_min), 0.004), bh, BRAND_LIGHT, BRAND, 0.8, z=2)
     mx = px(value)
-    vline(fig, mx, y - 0.14 / H, y + 0.14 / H, color, 3.0, z=4)
+    vline(fig, mx, y - 0.15 / H, y + 0.15 / H, color, 3.0, z=4)
     ha = "right" if mx > x + w * 0.75 else ("left" if mx < x + w * 0.25 else "center")
-    text(fig, mx, y + 0.19 / H, f"Questioned {fmt.format(value)}", 8, color, "bold", ha=ha, va="bottom")
-    text(fig, x, y - 0.24 / H, f"Reference range {fmt.format(ref_min)} to {fmt.format(ref_max)}"
-         + (f"   {caption}" if caption else ""), 7.5, MUTED, va="top")
+    text(fig, mx, y + 0.20 / H, f"Questioned {fmt.format(value)}", 8, color, "bold", ha=ha, va="bottom")
+    cap = f"References {fmt.format(ref_min)} to {fmt.format(ref_max)}"
+    if ok_lo is not None and ok_hi is not None:
+        cap += f"   ·   Normal {fmt.format(ok_lo)} to {fmt.format(ok_hi)}"
+    text(fig, x, y - 0.22 / H, cap, 7.5, MUTED, va="top")
+
+
+# Test-split AUC of each supporting check: how well it separated genuine from
+# forged signatures on unseen Pipeline 32 data (0.5 = coin flip, 1.0 = perfect).
+# Source: docs/forensic_calibration_final.json, "test_results". F5 is the model
+# result itself and is not graded here.
+FINDING_AUC = {"f1": 0.565, "f2": 0.616, "f3": 0.691, "f4": 0.751, "f6": 0.881, "f7": 0.871}
+
+
+def strength(code: str) -> Optional[Tuple[int, str]]:
+    auc = FINDING_AUC.get(code)
+    if auc is None:
+        return None
+    if auc >= 0.80:
+        return 3, "Strong"
+    if auc >= 0.65:
+        return 2, "Moderate"
+    return 1, "Weak"
+
+
+def text_width_in(fig, t) -> float:
+    return t.get_window_extent(renderer=fig.canvas.get_renderer()).width / fig.dpi
+
+
+def strength_badge(fig, x, y, code: str, suffix: str = " evidence", size: float = 7.5) -> None:
+    """Three dots (filled = stronger evidence) plus a word, left-aligned at x, centred on y."""
+    W, _ = _size(fig)
+    s = strength(code)
+    if s is None:
+        text(fig, x, y, "Decides the result", size, MUTED, "bold", va="center")
+        return
+    n, word = s
+    for i in range(3):
+        dot(fig, x + (0.05 + i * 0.12) / W, y, 0.085, BRAND if i < n else BORDER)
+    text(fig, x + 0.40 / W, y, word + suffix, size, MUTED, "bold", va="center")
+
+
+DEV_MAX = 3.0   # deviation tracks run from 0 (typical) to 3x the edge of normal
+
+
+def deviation_track(fig, x, y, w, dev: Optional[float], color: str) -> None:
+    """0 = typical for this writer, 1 = edge of normal (green zone), beyond = outside normal."""
+    W, H = _size(fig)
+    th = 0.14 / H
+    edge = x + w / DEV_MAX
+    rect(fig, x, y - th / 2, w, th, SURFACE, BORDER, 0.8)
+    rect(fig, x, y - th / 2, edge - x, th, OK_FILL, BORDER, 0.8)
+    vline(fig, edge, y - th / 2 - 0.04 / H, y + th / 2 + 0.04 / H, OK, 1.2, z=3)
+    if dev is None:
+        text(fig, x + w / 2, y, "Not available", 7, MUTED, ha="center", va="center")
+        return
+    mx = x + w * min(dev, DEV_MAX) / DEV_MAX
+    dot(fig, mx, y, 0.15, color)
+    if dev > DEV_MAX:
+        text(fig, x + w + 0.05 / W, y, f"{dev:.1f}×", 7, color, "bold", va="center")
+
+
+def dot_strip(fig, x, y, w, pairs: List[float], value: Optional[float], ok_hi: Optional[float],
+              color: str, fmt: str = "{:.2f}") -> None:
+    """F6: each genuine-vs-genuine distance as a dot, the questioned distance as a marker."""
+    W, H = _size(fig)
+    if value is None or ok_hi is None or not pairs:
+        text(fig, x, y, "Not available", 8, MUTED, va="center")
+        return
+    color = OK if value <= ok_hi else WARN
+    dom = max(ok_hi, value, max(pairs)) * 1.08
+    px = lambda v: x + w * (v / dom)
+    th = 0.16 / H
+    rect(fig, x, y - th / 2, w, th, SURFACE, BORDER, 0.8)
+    rect(fig, x, y - th / 2, px(ok_hi) - x, th, OK_FILL, "none", z=1)
+    for p in pairs:
+        dot(fig, px(p), y, 0.09, BRAND)
+    mx = px(value)
+    vline(fig, mx, y - 0.15 / H, y + 0.15 / H, color, 3.0, z=4)
+    ha = "right" if mx > x + w * 0.75 else ("left" if mx < x + w * 0.25 else "center")
+    text(fig, mx, y + 0.20 / H, f"Questioned {fmt.format(value)}", 8, color, "bold", ha=ha, va="bottom")
+    text(fig, x, y - 0.22 / H, f"Blue dots = genuine vs. genuine   ·   Normal up to {fmt.format(ok_hi)}",
+         7.5, MUTED, va="top")
+
+
+def image_cell(fig, x, y_top, w_in, h_in, img, label: str, caption: str, label_color: str = MUTED) -> None:
+    """Labelled image (letterboxed, thin border) with a caption underneath."""
+    W, H = _size(fig)
+    text(fig, x, y_top, label, 7.5, label_color, "bold", va="top")
+    ax = fig.add_axes((x, y_top - (0.17 + h_in) / H, w_in / W, h_in / H))
+    ax.imshow(img, interpolation="lanczos")
+    ax.set_anchor("W")              # letterbox to the left so the image lines up with its label
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_color(BORDER)
+        spine.set_linewidth(0.8)
+    text(fig, x, y_top - (0.17 + h_in + 0.06) / H, caption, 7.5, TEXT, va="top")
 
 
 # ── Cover page ────────────────────────────────────────────────────────────────
@@ -362,22 +471,22 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
     distance_gauge(fig, 0.42, top - 0.72 / H, 0.47, avg_distance, threshold, vcol)
     y = top - ch - 0.22 / H
 
-    # Supporting checks strip
+    # Supporting checks headline
     n_ok, n_eval = _support_stats(key)
+    strong = [c for c in ("f1", "f2", "f3", "f4", "f6", "f7")
+              if (strength(c) or (0,))[0] == 3 and key.get(f"{c}_label", "N/A") != "N/A"]
+    strong_ok = sum(1 for c in strong if key.get(f"{c}_label") in _OK_LABELS)
     text(fig, MX, y, "Supporting checks", 11, INK, "bold", va="center")
-    summary = (f"{n_ok} of {n_eval} supporting checks are consistent with the reference signatures."
-               if n_eval else "Supporting checks are not available for this case.")
+    if n_eval:
+        summary = f"{n_ok} of {n_eval} are consistent with the references"
+        if strong:
+            summary += (f", including {strong_ok} of the {len(strong)} strongest "
+                        f"({', '.join(c.upper() for c in strong)})")
+        summary += "."
+    else:
+        summary = "Supporting checks are not available for this case."
     text(fig, MX + 0.215, y, summary, 9, TEXT, va="center")
-    y -= 0.36 / H
-    sq = 0.30
-    for i, code in enumerate(["f1", "f2", "f3", "f4", "f6", "f7"]):
-        lab = key.get(f"{code}_label", "N/A")
-        col = label_color(lab)
-        x0 = MX + i * 0.50 / W
-        rect(fig, x0, y - sq / H / 2, sq / W, sq / H, col, col, 0.8)
-        text(fig, x0 + sq / W / 2, y, code.upper(), 8.5, WHITE, "bold", ha="center", va="center")
-    text(fig, MX + 6 * 0.50 / W + 0.02, y, "Green = consistent    Amber = differs", 8, MUTED, va="center")
-    y -= 0.32 / H
+    y -= 0.30 / H
 
     # Agreement note
     if n_eval:
@@ -389,152 +498,259 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
             rect(fig, MX, y - 0.62 / H, CONTENT_W, 0.62 / H, WHITE, WARN, 1.4)
             text(fig, MX + 0.02, y - 0.16 / H, "REVIEW RECOMMENDED", 8, WARN, "bold", va="center")
             para(fig, MX + 0.02, y - 0.27 / H, msg, CONTENT_W * W - 0.3, 9, TEXT)
-            y -= 0.62 / H + 0.34 / H
-        else:
-            y -= 0.05 / H
+            y -= 0.62 / H + 0.30 / H
 
-    # Key findings table
-    text(fig, MX, y, "Key Findings", 11, INK, "bold", va="center")
-    y -= 0.16 / H
-    cols = {"code": MX + 0.010, "name": MX + 0.060, "chip": MX + 0.300, "what": MX + 0.505}
-    hh = 0.30 / H
+    # Findings table: result, evidence strength and distance from the writer's normal
+    deviation = findings.get("deviation", {}) or {}
+    cols = {"code": MX + 0.010, "name": MX + 0.055, "chip": MX + 0.262, "str": MX + 0.462, "track": MX + 0.615}
+    track_w = 1 - MX - 0.035 - cols["track"]
+    hh = 0.46 / H
     rect(fig, MX, y - hh, CONTENT_W, hh, SURFACE, BORDER, 0.8)
+    yh = y - 0.15 / H
     text(fig, cols["code"], y - hh / 2, "Code", 8, MUTED, "bold", va="center")
     text(fig, cols["name"], y - hh / 2, "Finding", 8, MUTED, "bold", va="center")
     text(fig, cols["chip"], y - hh / 2, "Result", 8, MUTED, "bold", va="center")
-    text(fig, cols["what"], y - hh / 2, "What it checks", 8, MUTED, "bold", va="center")
+    text(fig, cols["str"], y - hh / 2, "Evidence strength", 8, MUTED, "bold", va="center")
+    text(fig, cols["track"], yh, "Distance from this writer's normal", 8, MUTED, "bold", va="center")
+    yt = y - 0.33 / H
+    text(fig, cols["track"], yt, "0", 7, MUTED, va="center")
+    text(fig, cols["track"] + track_w / DEV_MAX, yt, "normal limit", 7, OK, "bold", ha="center", va="center")
+    text(fig, cols["track"] + track_w, yt, "3×", 7, MUTED, ha="right", va="center")
     y -= hh
-    rh = 0.50 / H
+    rh = 0.46 / H
     for code in FINDING_ORDER:
         lab = key.get(f"{code}_label", "N/A")
         col = label_color(lab)
         yc = y - rh / 2
         text(fig, cols["code"], yc, code.upper(), 9.5, BRAND, "bold", va="center")
-        text(fig, cols["name"], yc, FINDING_NAMES[code], 9.5, INK, "bold", va="center")
+        text(fig, cols["name"], yc, FINDING_NAMES[code], 9, INK, "bold", va="center")
         chip(fig, cols["chip"], yc, lab, col, size=7.5, align="left")
-        text(fig, cols["what"], yc, FINDING_SHORT[code], 8, MUTED, va="center")
+        strength_badge(fig, cols["str"], yc, code, suffix="", size=7.5)
+        dev = deviation.get(code)
+        deviation_track(fig, cols["track"], yc, track_w, None if lab == "N/A" else dev, col)
         y -= rh
         hline(fig, MX, 1 - MX, y, BORDER, 0.8)
-    text(fig, MX, y - 0.22 / H, "See the Findings pages for what each result means and how it was measured.",
+
+    notes = ("Distance from normal: 0 is typical for this writer and the green zone is the normal range "
+             "(for F5, the model's threshold). Evidence strength: how well each check told genuine from forged "
+             "signatures in testing; the strongest checks deserve the most weight.")
+    y = para(fig, MX, y - 0.14 / H, notes, CONTENT_W * W, 8, MUTED, spacing=1.35)
+
+    # In plain words: one everyday sentence per finding, strongest evidence first
+    plain = findings.get("plain", {}) or {}
+    if plain:
+        y -= 0.34 / H
+        text(fig, MX, y, "In plain words", 11, INK, "bold", va="center")
+        y -= 0.20 / H
+        order = sorted(FINDING_ORDER, key=lambda c: (c != "f5", -(strength(c) or (0,))[0]))
+        for code in order:
+            if not plain.get(code):
+                continue
+            col = label_color(key.get(f"{code}_label", "N/A"))
+            dot(fig, MX + 0.06 / W, y - 0.07 / H, 0.08, col)
+            text(fig, MX + 0.16 / W, y, code.upper(), 8.5, BRAND, "bold", va="top")
+            y = para(fig, MX + 0.50 / W, y, plain[code], CONTENT_W * W - 0.55, 8.5, TEXT, spacing=1.35) - 0.07 / H
+    text(fig, MX, y - 0.14 / H, "The Findings pages show what each check measured, with pictures.",
          8, MUTED, va="center")
 
     _finish(fig, pdf, page_counter, total_pages, case_id)
 
 
 # ── Findings cards ────────────────────────────────────────────────────────────
-_MIN_CARD_IN = {"f1": 2.05, "f2": 1.65, "f3": 1.65, "f4": 1.65, "f5": 1.85, "f6": 1.85, "f7": 2.55}
-_TEXT_COL_IN = 4.0
+# Card layout, in inches. Cards with an illustration show it on the left and
+# the numbers on the right; F5/F6 (and any card whose illustration is missing)
+# show the numbers on the left instead.
+_CARD_W = CONTENT_W * PAGE_W
+_PADX = 0.18
+_HEADER_H = 0.48
+_LEFT_W = 3.3
+_COL_GAP = 0.28
+_RIGHT_W = _CARD_W - 2 * _PADX - _LEFT_W - _COL_GAP
+_IMG_H = 0.82
+_IMG_GAP = 0.14
+_CARD_GAP = 0.14
+_FINDINGS_TOP_IN = 1.64        # where page_title() lets content start (with subtitle)
+_FINDINGS_BOTTOM_IN = 0.68     # keep clear of the footer rule
+_HOW_TO_READ_H = 1.55
+_VISUAL_CODES = ("f1", "f2", "f3", "f4", "f7")
+_F1_ROWS = [("strokes", "Strokes"), ("bowls", "Closed loops"), ("dots", "Dots"), ("pen_lifts", "Pen lifts")]
 
 
-def _card_height_in(code: str, findings: dict) -> float:
-    obs = str((findings.get("modal_observations", {}) or {}).get(f"{code}_observation", "Not available."))
-    need = (0.50 + 0.14 + para_height_in(FINDING_EXPLAIN[code], _TEXT_COL_IN, 8.5) + 0.10 + 0.14
-            + para_height_in(obs, _TEXT_COL_IN, 8.5) + 0.22)
-    return max(need, _MIN_CARD_IN[code])
+def _numbers_h(code: str) -> float:
+    return {"f1": 1.18, "f5": 0.92, "f7": 1.96}.get(code, 0.80)
 
 
-def _card(fig, top: float, height_in: float, code: str, findings: dict) -> float:
-    """Draws one finding card; returns the y of the card bottom."""
+def _card_parts(code: str, findings: dict, visuals: Optional[dict]) -> dict:
+    """Text and section heights for one card; shared by layout planning and drawing."""
+    modal = findings.get("modal_observations", {}) or {}
+    plain = (findings.get("plain", {}) or {}).get(code, "")
+    obs = str(modal.get(f"{code}_observation", "Not available for this case."))
+    vis = (visuals or {}).get(code) if code in _VISUAL_CODES else None
+    full_w = _CARD_W - 2 * _PADX
+
+    explain_h = para_height_in(FINDING_EXPLAIN[code], full_w, 8, 1.35)
+    plain_h = para_height_in(plain, full_w, 10.5, 1.3) if plain else 0.0
+    details_h = 0.17 + para_height_in(obs, _RIGHT_W, 8, 1.35)
+    if vis:
+        legend = str(vis.get("legend") or "")
+        left_h = 0.17 + _IMG_H + 0.24 + (para_height_in(legend, _LEFT_W, 7, 1.3) if legend else 0)
+        right_h = _numbers_h(code) + 0.10 + details_h
+    else:
+        left_h = _numbers_h(code)
+        right_h = details_h
+    body_top = _HEADER_H + explain_h + 0.08 + plain_h + 0.16
+    return {"plain": plain, "obs": obs, "vis": vis, "explain_h": explain_h, "plain_h": plain_h,
+            "body_top": body_top, "height": body_top + max(left_h, right_h) + 0.16}
+
+
+def _card_height_in(code: str, findings: dict, visuals: Optional[dict] = None) -> float:
+    return _card_parts(code, findings, visuals)["height"]
+
+
+def _draw_numbers(fig, code: str, x: float, top: float, w_in: float, ranges: dict, col: str) -> None:
+    """The measured values for one finding, drawn from `top` (figure fraction) downward."""
     W, H = _size(fig)
-    key = findings.get("key_findings", {})
-    modal = findings.get("modal_observations", {})
-    ranges = findings.get("ranges", {}) or {}
-    label = key.get(f"{code}_label", "N/A")
-    col = label_color(label)
-    h = height_in / H
-    rect(fig, MX, top - h, CONTENT_W, h, WHITE, BORDER, 1.0)
-
-    text(fig, MX + 0.02, top - 0.22 / H, code.upper(), 12, BRAND, "bold", va="center")
-    text(fig, MX + 0.055, top - 0.22 / H, FINDING_NAMES[code], 12, INK, "bold", va="center")
-    chip(fig, 1 - MX - 0.015, top - 0.22 / H, label, col)
-    hline(fig, MX + 0.015, 1 - MX - 0.015, top - 0.42 / H, BORDER, 0.8)
-
-    tx = MX + 0.02
-    tw = _TEXT_COL_IN
-    y = top - 0.50 / H
-    text(fig, tx, y, "WHAT THIS CHECKS", 7, MUTED, "bold", va="top")
-    y = para(fig, tx, y - 0.14 / H, FINDING_EXPLAIN[code], tw, 8.5, TEXT) - 0.10 / H
-    text(fig, tx, y, "WHAT WE FOUND", 7, MUTED, "bold", va="top")
-    obs = modal.get(f"{code}_observation", "Not available for this case.")
-    para(fig, tx, y - 0.14 / H, str(obs), tw, 8.5, INK)
-
-    # Right-hand visual
-    vx, vw = MX + 0.535, 0.29
-    vy_mid = top - h * 0.55
-    cap = "Blue band = writer's reference range"
+    w = w_in / W
     if code == "f1":
         counts = ranges.get("f1") or {}
-        cy = top - 0.62 / H
-        text(fig, vx, cy, "Feature", 7.5, MUTED, "bold", va="center")
-        text(fig, vx + 0.115, cy, "Questioned", 7.5, MUTED, "bold", va="center")
-        text(fig, vx + 0.20, cy, "References", 7.5, MUTED, "bold", va="center")
-        names = [("strokes", "Strokes"), ("bowls", "Closed loops"), ("dots", "Dots"), ("pen_lifts", "Pen lifts")]
-        for i, (k, nm) in enumerate(names):
-            ry = cy - (i + 1) * 0.30 / H
+        cx = [0.0, 1.05, 1.75, 2.50]
+        for off, head in zip(cx, ("Feature", "Questioned", "References", "Normal")):
+            text(fig, x + off / W, top - 0.10 / H, head, 7.5, MUTED, "bold", va="center")
+        for i, (k, nm) in enumerate(_F1_ROWS):
+            ry = top - (0.36 + i * 0.22) / H
+            hline(fig, x, x + w, ry + 0.11 / H, BORDER, 0.6)
+            text(fig, x, ry, nm, 8.5, TEXT, va="center")
             c = counts.get(k)
-            hline(fig, vx, vx + vw, ry + 0.15 / H, BORDER, 0.6)
-            text(fig, vx, ry, nm, 8.5, TEXT, va="center")
-            if c:
-                tol = c.get("tol", 1)
-                inside = (c["min"] - tol) <= c["q"] <= (c["max"] + tol)
-                text(fig, vx + 0.115, ry, str(c["q"]), 9, OK if inside else WARN, "bold", va="center")
-                rng = f"{c['min']}" if c["min"] == c["max"] else f"{c['min']} to {c['max']}"
-                text(fig, vx + 0.20, ry, rng, 8.5, TEXT, va="center")
-    elif code == "f2":
-        r = ranges.get("f2") or {}
-        range_bar(fig, vx, vy_mid, vw, r.get("q"), r.get("min"), r.get("max"), col, "{:.1f} deg")
-        text(fig, vx, vy_mid - 0.62 / H, cap, 7.5, MUTED, va="top")
-    elif code == "f3":
-        r = ranges.get("f3") or {}
-        range_bar(fig, vx, vy_mid, vw, r.get("q"), r.get("min"), r.get("max"), col, "{:.3f}")
-        text(fig, vx, vy_mid - 0.62 / H, "Lower = smoother line, higher = more wobble", 7.5, MUTED, va="top")
-    elif code == "f4":
-        r = ranges.get("f4") or {}
-        range_bar(fig, vx, vy_mid, vw, r.get("q"), r.get("min"), r.get("max"), col, "{:.2f}")
-        text(fig, vx, vy_mid - 0.62 / H, "Ratio = width divided by height", 7.5, MUTED, va="top")
+            if not c:
+                continue
+            lo, hi = c.get("ok_lo", c["min"] - c.get("tol", 1)), c.get("ok_hi", c["max"] + c.get("tol", 1))
+            inside = lo <= c["q"] <= hi
+            text(fig, x + cx[1] / W, ry, str(c["q"]), 9, OK if inside else WARN, "bold", va="center")
+            rng = f"{c['min']}" if c["min"] == c["max"] else f"{c['min']} to {c['max']}"
+            text(fig, x + cx[2] / W, ry, rng, 8.5, TEXT, va="center")
+            text(fig, x + cx[3] / W, ry, f"{max(lo, 0)} to {hi}", 8.5, MUTED, va="center")
     elif code == "f5":
         r = ranges.get("f5") or {}
         if r:
-            distance_gauge(fig, vx, vy_mid + 0.05 / H, vw, r["distance"], r["threshold"], col)
+            distance_gauge(fig, x, top - 0.50 / H, w, r["distance"], r["threshold"], col)
     elif code == "f6":
         r = ranges.get("f6") or {}
-        range_bar(fig, vx, vy_mid, vw, r.get("q"), r.get("min"), r.get("max"), col, "{:.2f}")
-        text(fig, vx, vy_mid - 0.62 / H, "Distance between signatures, lower = more alike", 7.5, MUTED, va="top")
+        dot_strip(fig, x, top - 0.42 / H, w, r.get("pairs") or [], r.get("q"), r.get("ok_hi"), col)
     elif code == "f7":
-        d = ranges.get("f7_darkness") or {}
-        wv = ranges.get("f7_width") or {}
-        text(fig, vx, top - 0.60 / H, "Ink darkness", 7.5, MUTED, "bold", va="center")
-        range_bar(fig, vx, top - 0.98 / H, vw, d.get("q"), d.get("min"), d.get("max"), col, "{:.2f}")
-        text(fig, vx, top - 1.58 / H, "Line-width variation", 7.5, MUTED, "bold", va="center")
-        range_bar(fig, vx, top - 1.96 / H, vw, wv.get("q"), wv.get("min"), wv.get("max"), col, "{:.2f}")
+        for i, (key, title, fmt) in enumerate((("f7_darkness", "Ink darkness", "{:.2f}"),
+                                               ("f7_width", "Line-width variation", "{:.2f}"))):
+            r = ranges.get(key) or {}
+            t0 = top - i * 1.0 / H
+            text(fig, x, t0 - 0.06 / H, title, 7.5, MUTED, "bold", va="center")
+            range_bar(fig, x, t0 - 0.56 / H, w, r.get("q"), r.get("min"), r.get("max"), col, fmt,
+                      r.get("ok_lo"), r.get("ok_hi"))
+    else:
+        r = ranges.get(code) or {}
+        fmt = {"f2": "{:+.1f}°", "f3": "{:.3f}", "f4": "{:.2f}"}[code]
+        range_bar(fig, x, top - 0.42 / H, w, r.get("q"), r.get("min"), r.get("max"), col, fmt,
+                  r.get("ok_lo"), r.get("ok_hi"))
+
+
+def _card(fig, top: float, code: str, findings: dict, visuals: Optional[dict] = None) -> float:
+    """Draws one finding card with its top at `top`; returns the y of the card bottom."""
+    W, H = _size(fig)
+    parts = _card_parts(code, findings, visuals)
+    key = findings.get("key_findings", {})
+    ranges = findings.get("ranges", {}) or {}
+    label = key.get(f"{code}_label", "N/A")
+    col = label_color(label)
+    h = parts["height"] / H
+    rect(fig, MX, top - h, CONTENT_W, h, WHITE, BORDER, 1.0)
+    rect(fig, MX, top - h, 0.05 / W, h, col, "none", z=1)      # status accent stripe
+
+    x0 = MX + _PADX / W
+    yh = top - 0.24 / H
+    text(fig, x0, yh, code.upper(), 12, BRAND, "bold", va="center")
+    t_name = text(fig, x0 + 0.42 / W, yh, FINDING_NAMES[code], 12, INK, "bold", va="center")
+    strength_badge(fig, x0 + (0.42 + text_width_in(fig, t_name) + 0.22) / W, yh, code)
+    chip(fig, 1 - MX - _PADX / W, yh, label, col)
+
+    full_w = _CARD_W - 2 * _PADX
+    y = top - _HEADER_H / H
+    para(fig, x0, y, FINDING_EXPLAIN[code], full_w, 8, MUTED, spacing=1.35)
+    y -= (parts["explain_h"] + 0.08) / H
+    if parts["plain"]:
+        para(fig, x0, y, parts["plain"], full_w, 10.5, INK, spacing=1.3)
+    hline(fig, x0, 1 - MX - _PADX / W, top - (parts["body_top"] - 0.08) / H, BORDER, 0.6)
+
+    body = top - parts["body_top"] / H
+    xr = x0 + (_LEFT_W + _COL_GAP) / W
+    vis = parts["vis"]
+    if vis:
+        cell_w = (_LEFT_W - _IMG_GAP) / 2
+        image_cell(fig, x0, body, cell_w, _IMG_H, vis["ref"], str(vis["ref_label"]), str(vis["ref_caption"]))
+        image_cell(fig, x0 + (cell_w + _IMG_GAP) / W, body, cell_w, _IMG_H, vis["q"], "Questioned",
+                   str(vis["q_caption"]), BRAND)
+        if vis.get("legend"):
+            para(fig, x0, body - (0.17 + _IMG_H + 0.26) / H, str(vis["legend"]), _LEFT_W, 7, MUTED, spacing=1.3)
+        _draw_numbers(fig, code, xr, body, _RIGHT_W, ranges, col)
+        details_top = body - (_numbers_h(code) + 0.10) / H
+    else:
+        _draw_numbers(fig, code, x0, body, _LEFT_W, ranges, col)
+        details_top = body
+    text(fig, xr, details_top, "MEASUREMENT DETAILS", 7, MUTED, "bold", va="top")
+    para(fig, xr, details_top - 0.17 / H, parts["obs"], _RIGHT_W, 8, TEXT, spacing=1.35)
     return top - h
 
 
-def page_findings(pdf, page_counter, total_pages, case_id, findings: Optional[dict], part: int) -> None:
-    """part 1 = F1-F4, part 2 = F5-F7 + notes."""
-    W, H = PAGE_W, PAGE_H
+def plan_findings_pages(findings: Optional[dict], visuals: Optional[dict] = None) -> List[List[str]]:
+    """
+    Flows the F1-F7 cards onto as many pages as they need (cards never split),
+    and reserves room for the "How to read" box after the last card. An empty
+    list at the end means that box gets a page of its own.
+    """
+    findings = findings or {}
+    avail = PAGE_H - _FINDINGS_TOP_IN - _FINDINGS_BOTTOM_IN
+    pages: List[List[str]] = [[]]
+    used = 0.0
+    for code in FINDING_ORDER:
+        hc = _card_height_in(code, findings, visuals)
+        if pages[-1] and used + hc > avail:
+            pages.append([])
+            used = 0.0
+        pages[-1].append(code)
+        used += hc + _CARD_GAP
+    if used + _HOW_TO_READ_H > avail:
+        pages.append([])
+    return pages
+
+
+def _how_to_read(fig, y: float) -> None:
+    W, H = _size(fig)
+    rect(fig, MX, y - _HOW_TO_READ_H / H, CONTENT_W, _HOW_TO_READ_H / H, SURFACE, BORDER, 0.8)
+    text(fig, MX + 0.02, y - 0.20 / H, "How to read these cards", 9.5, INK, "bold", va="center")
+    notes = [
+        "Bars: the green zone is what counts as normal for this writer, the blue band is the range seen in "
+        "the four references, and the marker is the questioned signature. A marker inside the green zone is "
+        "normal variation even if it sits outside the blue band.",
+        "Evidence strength (dots next to each title) shows how well that check told genuine from forged "
+        "signatures when tested on signatures the system had never seen. A weak check is easily fooled, so "
+        "give it less weight than a strong one.",
+        "Pictures: the reference shown is the most typical of the four. F5 and F6 both use the AI model: F5 "
+        "compares with the combined references, F6 with the writer's own variation, so their numbers differ.",
+    ]
+    yy = y - 0.36 / H
+    for n in notes:
+        yy = para(fig, MX + 0.02, yy, n, CONTENT_W * W - 0.3, 8, TEXT, spacing=1.35) - 0.06 / H
+
+
+def page_findings(pdf, page_counter, total_pages, case_id, findings: Optional[dict], codes: List[str],
+                  visuals: Optional[dict] = None, first: bool = True, last: bool = False) -> None:
+    """One page of finding cards (see plan_findings_pages); the last page ends with the reading guide."""
+    _, H = PAGE_W, PAGE_H
     findings = findings or {}
     fig = _new_page(case_id, "Forensic Findings")
-    codes = ["f1", "f2", "f3", "f4"] if part == 1 else ["f5", "f6", "f7"]
-    y = page_title(fig, "Forensic Findings (F1-F7)" + ("" if part == 1 else "  continued"),
-                   "Each finding explains what was checked, what was found, and how it compares with the references")
+    y = page_title(fig, "Forensic Findings (F1-F7)" + ("" if first else "  continued"),
+                   "What each check measured, what it found, and how much weight it deserves")
     for code in codes:
-        y = _card(fig, y, _card_height_in(code, findings), code, findings) - 0.10 / H
-
-    if part == 2:
-        rect(fig, MX, y - 1.05 / H, CONTENT_W, 1.05 / H, SURFACE, BORDER, 0.8)
-        text(fig, MX + 0.02, y - 0.20 / H, "How to read this page", 9, INK, "bold", va="center")
-        notes = [
-            "Blue band = the range seen in this writer's own reference signatures. The marker shows where the "
-            "questioned signature falls. A marker inside the band means it looks like the writer's normal variation.",
-            "F5 and F6 both use the model but measure different things. F5 compares the questioned signature with "
-            "the combined (average) references. F6 compares it with each reference one by one, so the two "
-            "distances can differ.",
-        ]
-        yy = y - 0.34 / H
-        for n in notes:
-            yy = para(fig, MX + 0.02, yy, n, CONTENT_W * W - 0.3, 8, TEXT, spacing=1.35) - 0.06 / H
-
+        y = _card(fig, y, code, findings, visuals) - _CARD_GAP / H
+    if last:
+        _how_to_read(fig, y)
     _finish(fig, pdf, page_counter, total_pages, case_id)
 
 
@@ -579,6 +795,10 @@ def page_explanation(pdf, page_counter, total_pages, case_id) -> None:
         ("Threshold", "The distance limit the model uses to separate 'same writer' from 'different writer'."),
         ("Distance", "How far apart two signatures are according to the model. Lower means more similar."),
         ("Grad-CAM", "A heatmap showing which parts of the signature the model relied on most."),
+        ("Normal range", "The green zone on each bar: how much this writer's signatures can vary and still "
+                         "count as consistent."),
+        ("Evidence strength", "How well a check told genuine from forged signatures in testing. Weak checks "
+                              "are easily fooled; strong ones deserve more weight."),
     ]
     rh = 0.40 / H
     hline(fig, MX, 1 - MX, y, INK, 1.0)

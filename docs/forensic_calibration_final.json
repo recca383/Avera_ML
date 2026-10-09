@@ -1,0 +1,104 @@
+{
+  "settings": {
+    "N_VAL": 1000,
+    "N_TEST": 1000,
+    "TARGET_FPR": 0.05,
+    "USE_CROP": true,
+    "rule": "each tolerance = percentile of the statistic over GENUINE validation episodes so at most TARGET_FPR of genuine signatures are flagged"
+  },
+  "defaults": {
+    "min_component_area": 12,
+    "dot_max_area": 45,
+    "count_tolerance": 1,
+    "angle_tolerance_deg": 5.0,
+    "angle_sigma": 2.0,
+    "curvature_ratio": 1.5,
+    "ratio_tolerance": 0.25,
+    "natural_range_margin": 1.1,
+    "darkness_tolerance": 0.25,
+    "width_var_ratio": 2.0
+  },
+  "calibrated_thresholds": {
+    "min_component_area": 12,
+    "dot_max_area": 45,
+    "count_tolerance": 3,
+    "angle_tolerance_deg": 6.74,
+    "angle_sigma": 2.7,
+    "curvature_ratio": 1.422,
+    "ratio_tolerance": 0.3,
+    "natural_range_margin": 1.119,
+    "darkness_tolerance": 0.122,
+    "width_var_ratio": 1.825
+  },
+  "cutoffs_current": {
+    "f1": 1,
+    "f2": 1.0,
+    "f3": 0.4054651081081644,
+    "f4": 0.25,
+    "f6": 1.1,
+    "f6_ch3": 1.0,
+    "f7_dark": 0.25,
+    "f7_width": 0.6931471805599453
+  },
+  "cutoffs_calibrated": {
+    "f1": 3.0,
+    "f2": 1.3480049442392192,
+    "f3": 0.3519976268056765,
+    "f4": 0.3004844434495297,
+    "f6": 1.1189066537420829,
+    "f6_ch3": 1.0467913060246683,
+    "f7_dark": 0.12209972469215248,
+    "f7_width": 0.6014293981473688
+  },
+  "test_results": {
+    "f1": {
+      "auc": 0.565,
+      "current_genuine_flagged": 0.1391,
+      "current_forged_flagged": 0.2004,
+      "calibrated_genuine_flagged": 0.0363,
+      "calibrated_forged_flagged": 0.0575
+    },
+    "f2": {
+      "auc": 0.6156,
+      "current_genuine_flagged": 0.0907,
+      "current_forged_flagged": 0.246,
+      "calibrated_genuine_flagged": 0.0565,
+      "calibrated_forged_flagged": 0.1329
+    },
+    "f3": {
+      "auc": 0.6906,
+      "current_genuine_flagged": 0.0444,
+      "current_forged_flagged": 0.1369,
+      "calibrated_genuine_flagged": 0.0685,
+      "calibrated_forged_flagged": 0.1865
+    },
+    "f4": {
+      "auc": 0.7507,
+      "current_genuine_flagged": 0.0403,
+      "current_forged_flagged": 0.3889,
+      "calibrated_genuine_flagged": 0.0181,
+      "calibrated_forged_flagged": 0.2639
+    },
+    "f6": {
+      "auc": 0.8814,
+      "current_genuine_flagged": 0.1028,
+      "current_forged_flagged": 0.6746,
+      "calibrated_genuine_flagged": 0.1028,
+      "calibrated_forged_flagged": 0.6687
+    },
+    "f6_ch3": {
+      "auc": 0.8954,
+      "current_genuine_flagged": 0.1089,
+      "current_forged_flagged": 0.7163,
+      "calibrated_genuine_flagged": 0.0988,
+      "calibrated_forged_flagged": 0.6845
+    },
+    "f7": {
+      "auc": 0.871,
+      "current_genuine_flagged": 0.0302,
+      "current_forged_flagged": 0.3373,
+      "calibrated_genuine_flagged": 0.129,
+      "calibrated_forged_flagged": 0.7143
+    }
+  }
+}

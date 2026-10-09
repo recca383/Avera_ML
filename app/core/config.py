@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     # ── Model ──────────────────────────────────────────────────────────────────
     MODEL_PATH: str = "app/ml/exported_model/siamese_signature_model.pt"
     MODEL_INPUT_SIZE: int = 224         # expected H=W after preprocessing
-    INFERENCE_THRESHOLD: float = 0.485123
+    INFERENCE_THRESHOLD: float = 0.6851  # Pipeline 32 validation 4:1 EER threshold
 
     # ── Grad-CAM ───────────────────────────────────────────────────────────────
     GRADCAM_OUTPUT_PREFIX: str = "gradcam-output"

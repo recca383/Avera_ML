@@ -14,8 +14,11 @@ reads:
 F1-F4 and F7 use classical image processing (OpenCV / scikit-image, incl. the
 Zhang-Suen skeleton). F5 and F6 use the trained model's embedding space.
 
-All comparison thresholds below are ENGINEERING DEFAULTS (see THRESHOLDS) and
-have not been validated against a forensic examiner. The PDF disclaimer says so.
+The comparison tolerances (see THRESHOLDS) are statistically calibrated on the
+Pipeline 32 validation split so that at most ~5% of genuine questioned
+signatures are flagged per finding (docs/forensic_calibration_final.json).
+They are calibrated against data, not validated by a forensic examiner; the
+PDF disclaimer still applies.
 
 Inputs are the preprocessed PIL images (ink dark on white, as returned by
 PreprocessingService.bytes_to_pil), NOT the inverted model tensors.
@@ -31,18 +34,21 @@ import numpy as np
 from PIL import Image
 from skimage.morphology import skeletonize
 
-# ── Engineering defaults (tune / validate against examiner judgment) ──────────
+# ── Thresholds ────────────────────────────────────────────────────────────────
+# Calibrated on Pipeline 32 validation split: each tolerance = 95th percentile
+# over genuine questioned signatures (≤5% genuine flagged).
+# See docs/forensic_calibration_final.json.
 THRESHOLDS = {
-    "min_component_area": 12,     # px; ignore specks smaller than this
-    "dot_max_area": 45,           # px; a component this small (and roundish) = terminal dot
-    "count_tolerance": 1,         # allowed +/- difference in F1 counts vs. reference range
-    "angle_tolerance_deg": 5.0,   # F2 minimum tolerance
-    "angle_sigma": 2.0,           # F2 tolerance = max(min tol, sigma * ref std)
-    "curvature_ratio": 1.5,       # F3 query/ref curvature variance ratio
-    "ratio_tolerance": 0.25,      # F4 relative aspect-ratio deviation
-    "natural_range_margin": 1.10, # F6 margin on the reference max pairwise distance
-    "darkness_tolerance": 0.25,   # F7 relative mean-darkness deviation
-    "width_var_ratio": 2.0,       # F7 query/ref stroke-width-variance ratio
+    "min_component_area": 12,       # px; ignore specks smaller than this
+    "dot_max_area": 45,             # px; a component this small (and roundish) = terminal dot
+    "count_tolerance": 3,           # allowed +/- difference in F1 counts vs. reference range
+    "angle_tolerance_deg": 6.74,    # F2 minimum tolerance
+    "angle_sigma": 2.7,             # F2 tolerance = max(min tol, sigma * ref std)
+    "curvature_ratio": 1.422,       # F3 query/ref curvature variance ratio
+    "ratio_tolerance": 0.3,         # F4 relative aspect-ratio deviation
+    "natural_range_margin": 1.119,  # F6 margin on the reference max pairwise distance
+    "darkness_tolerance": 0.122,    # F7 relative mean-darkness deviation
+    "width_var_ratio": 1.825,       # F7 query/ref stroke-width-variance ratio
 }
 
 

@@ -68,6 +68,9 @@ WORKDIR /app
 # Copy application source
 COPY --chown=${APP_USER}:${APP_USER} app/ ./app/
 
+# Bundled report font (Sora); report_pages.py loads it from /app/assets/fonts
+COPY --chown=${APP_USER}:${APP_USER} assets/ ./assets/
+
 # ── Model file ────────────────────────────────────────────────────────────────
 # The exported TorchScript model must be placed at:
 #   app/ml/exported_model/siamese_signature_model.pt

@@ -66,5 +66,27 @@ class DeviationMatchesLabelTest(unittest.TestCase):
                 self.assertEqual(inside, f["key_findings"][f"{code}_label"] == "Consistent")
 
 
+class F5MatchesVerdictTest(unittest.TestCase):
+    """F5 reads as within the threshold exactly when the verdict is GENUINE (distance < threshold)."""
+
+    def test_f5_bands(self) -> None:
+        refs = [_signature(s) for s in range(4)]
+        q = _signature(10)
+        t = 0.6851
+        cases = {
+            0.50 * t: "Well within threshold",
+            0.90 * t: "Within threshold",
+            t: "Exceeds threshold",            # verdict is FORGED at distance == threshold
+            1.40 * t: "Exceeds threshold",
+            1.60 * t: "Far exceeds threshold",
+        }
+        for distance, expected in cases.items():
+            with self.subTest(distance=distance):
+                f = compute_forensic_findings(refs, q, None, None, distance=distance, threshold=t)
+                self.assertEqual(f["key_findings"]["f5_label"], expected)
+                close = "close to the references" in f["plain"]["f5"]
+                self.assertEqual(close, distance < t)
+
+
 if __name__ == "__main__":
     unittest.main()

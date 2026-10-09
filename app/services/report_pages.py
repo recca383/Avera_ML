@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import datetime
 import os
-import textwrap
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+from matplotlib.font_manager import FontProperties
 from matplotlib.lines import Line2D
 from matplotlib.patches import Ellipse, Polygon, Rectangle
 
@@ -166,31 +169,80 @@ def text(fig, x, y, s, size=9.0, color=TEXT, weight="normal", ha="left", va="bas
                     family=FONT, zorder=5, **kw)
 
 
-def wrap(s: str, width_in: float, size: float) -> List[str]:
-    chars = max(12, int(width_in / (size / 72.0 * 0.49)))
-    return textwrap.wrap(s, width=chars) or [""]
+# Off-screen figure for measuring text, so wrapping and block heights follow the
+# real font metrics instead of a per-character guess. A high dpi keeps glyph
+# hinting from inflating widths (at 72 dpi lines measured ~8% too long).
+_MEASURE_DPI = 300
+_MEASURE_FIG = Figure(figsize=(8.5, 11), dpi=_MEASURE_DPI)
+FigureCanvasAgg(_MEASURE_FIG)
+
+
+@lru_cache(maxsize=8192)
+def text_width_pt(s: str, size: float, weight: str = "normal") -> float:
+    """Width in points of `s` set in the report font."""
+    prop = FontProperties(family=FONT, size=size, weight=weight)
+    w, _, _ = _MEASURE_FIG.canvas.get_renderer().get_text_width_height_descent(s, prop, ismath=False)
+    return w * 72.0 / _MEASURE_DPI
+
+
+@lru_cache(maxsize=256)
+def _line_layout_in(size: float, spacing: float, weight: str) -> Tuple[float, float]:
+    """(height of one line, step per extra line) in inches, as matplotlib lays them out."""
+    renderer = _MEASURE_FIG.canvas.get_renderer()
+    heights = []
+    for n in (1, 2):
+        t = _MEASURE_FIG.text(0, 0, "\n".join(["lp"] * n), fontsize=size, fontweight=weight,
+                              family=FONT, linespacing=spacing)
+        heights.append(t.get_window_extent(renderer).height / _MEASURE_DPI)
+        t.remove()
+    return heights[0], heights[1] - heights[0]
+
+
+def wrap(s: str, width_in: float, size: float, weight: str = "normal") -> List[str]:
+    """Greedy word wrap using the real glyph widths of the report font."""
+    limit = width_in * 72.0 * 0.98      # small safety margin against rounding at the edge
+    lines: List[str] = []
+    cur = ""
+    for word in s.split():
+        cand = f"{cur} {word}" if cur else word
+        if cur and text_width_pt(cand, size, weight) > limit:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
+def lines_height_in(n: int, size: float, spacing: float, weight: str = "normal") -> float:
+    """Height of an n-line text block."""
+    first, step = _line_layout_in(size, spacing, weight)
+    return first + max(n - 1, 0) * step
 
 
 def para(fig, x, y_top, s, width_in, size=9.0, color=TEXT, weight="normal", spacing=1.4) -> float:
     """Draw wrapped text with its top at y_top; returns the y of the paragraph bottom."""
     _, H = _size(fig)
-    lines = wrap(s, width_in, size)
+    lines = wrap(s, width_in, size, weight)
     text(fig, x, y_top, "\n".join(lines), size, color, weight, va="top", linespacing=spacing)
-    return y_top - (len(lines) * size * spacing / 72.0) / H
+    return y_top - para_height_in(s, width_in, size, spacing, weight) / H
 
 
-def para_height_in(s: str, width_in: float, size: float, spacing: float = 1.4) -> float:
-    return len(wrap(s, width_in, size)) * size * spacing / 72.0
+def para_height_in(s: str, width_in: float, size: float, spacing: float = 1.4,
+                   weight: str = "normal") -> float:
+    return lines_height_in(len(wrap(s, width_in, size, weight)), size, spacing, weight)
 
 
 def chip(fig, x_anchor, y_center, label: str, color: str, size=TYPE_BODY, align: str = "right") -> None:
     """Bordered status label anchored at x_anchor (left or right edge)."""
     W, H = _size(fig)
-    w_in = len(label) * size / 72.0 * 0.56 + 0.42
+    pad_in = 0.14
+    w_in = text_width_pt(label, size, "bold") / 72.0 + 2 * pad_in
     h_in = 0.26
     x0 = x_anchor - w_in / W if align == "right" else x_anchor
     rect(fig, x0, y_center - h_in / 2 / H, w_in / W, h_in / H, WHITE, color, 1.2)
-    text(fig, x0 + 0.14 / W, y_center, label, size, color, "bold", va="center")
+    text(fig, x0 + pad_in / W, y_center, label, size, color, "bold", va="center")
 
 
 # ── Page chrome ───────────────────────────────────────────────────────────────
@@ -241,7 +293,7 @@ def _finish(fig, pdf, page_counter, total_pages, case_id) -> None:
 
 # ── Visual components ─────────────────────────────────────────────────────────
 def distance_gauge(fig, x, y, w, distance: float, threshold: float, color: str, show_zones=True) -> None:
-    """Track split at the threshold; marker shows the questioned distance."""
+    """Track split at the threshold with labels kept outside the bar."""
     W, H = _size(fig)
     dom = max(threshold * 1.6, distance * 1.15, 1e-6)
     th = 0.17 / H                                     # track height (fraction)
@@ -250,9 +302,11 @@ def distance_gauge(fig, x, y, w, distance: float, threshold: float, color: str, 
     rect(fig, tx, y - th / 2, x + w - tx, th, BAD_FILL, BORDER, 0.8)
     if show_zones:
         if (tx - x) * W > 1.0:
-            text(fig, (x + tx) / 2, y, "Same writer", 7.5, OK, ha="center", va="center")
+            text(fig, (x + tx) / 2, y - th / 2 - 0.10 / H, "Same writer",
+                 TYPE_LABEL, OK, ha="center", va="top")
         if (x + w - tx) * W > 1.1:
-            text(fig, (tx + x + w) / 2, y, "Different writer", 7.5, BAD, ha="center", va="center")
+            text(fig, (tx + x + w) / 2, y - th / 2 - 0.10 / H, "Different writer",
+                 TYPE_LABEL, BAD, ha="center", va="top")
     vline(fig, tx, y - th / 2 - 0.06 / H, y + th / 2 + 0.06 / H, BRAND, 2.2, z=3)
     mx = x + w * (min(distance, dom) / dom)
     fig.add_artist(Polygon([[mx - 0.07 / W, y + th / 2 + 0.16 / H], [mx + 0.07 / W, y + th / 2 + 0.16 / H],
@@ -260,8 +314,9 @@ def distance_gauge(fig, x, y, w, distance: float, threshold: float, color: str, 
                            facecolor=color, edgecolor="none", zorder=4))
     ha = "right" if mx > x + w * 0.55 else "left"
     text(fig, mx, y + th / 2 + 0.24 / H, f"Distance {distance:.4f}", 8.5, color, "bold", ha=ha, va="bottom")
-    text(fig, tx, y - th / 2 - 0.09 / H, f"Threshold {threshold:.4f}", 8, BRAND, "bold", ha="center", va="top")
-    text(fig, x, y - th / 2 - 0.09 / H, "0", 7.5, MUTED, va="top")
+    text(fig, tx, y - th / 2 - 0.28 / H, f"Threshold {threshold:.4f}",
+         TYPE_LABEL, BRAND, "bold", ha="center", va="top")
+    text(fig, x, y - th / 2 - 0.28 / H, "0", TYPE_LABEL, MUTED, va="top")
 
 
 def range_bar(fig, x, y, w, value: Optional[float], ref_min: Optional[float], ref_max: Optional[float],
@@ -335,6 +390,7 @@ def strength_badge(fig, x, y, code: str, suffix: str = " evidence", size: float 
 
 
 DEV_MAX = 3.0   # deviation tracks run from 0 (typical) to 3x the edge of normal
+DEV_LABEL_IN = 0.42   # room to the right of a track for an off-scale label such as "12.5×"
 
 
 def deviation_track(fig, x, y, w, dev: Optional[float], color: str) -> None:
@@ -351,7 +407,8 @@ def deviation_track(fig, x, y, w, dev: Optional[float], color: str) -> None:
     mx = x + w * min(dev, DEV_MAX) / DEV_MAX
     dot(fig, mx, y, 0.15, color)
     if dev > DEV_MAX:
-        text(fig, x + w + 0.05 / W, y, f"{dev:.1f}×", 7, color, "bold", va="center")
+        # Clear of the dot (radius 0.075 in); callers leave DEV_LABEL_IN to the right of the track.
+        text(fig, x + w + 0.11 / W, y, f"{dev:.1f}×", 7, color, "bold", va="center")
 
 
 def dot_strip(fig, x, y, w, pairs: List[float], value: Optional[float], ok_hi: Optional[float],
@@ -410,18 +467,21 @@ def page_cover(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, c
     rect(fig, MX, 0.700, 0.08, 0.003, BRAND)
 
     # Verdict card
-    top, ch = 0.665, 0.195
-    rect(fig, MX, top - ch, CONTENT_W, ch, WHITE, vcol, 2.0)
+    # Verdict card: the confidence line sits under the body text and the card grows to fit it.
+    top = 0.665
     text(fig, MX + 0.03, top - 0.030, "MODEL RESULT", 8, MUTED, "bold", va="center")
     text(fig, MX + 0.03, top - 0.078, VERDICT_LABELS.get(verdict, verdict), 26, vcol, "bold", va="center")
     text(fig, MX + 0.03, top - 0.103, VERDICT_SUBTITLES.get(verdict, ""), 9, TEXT, va="center")
     body = (f"The model measured a distance of {avg_distance:.4f} between the questioned signature and the "
             f"reference signatures. The decision threshold is {threshold:.4f}. "
             f"A distance above the threshold is read as a different writer.")
-    para(fig, MX + 0.03, top - 0.130, body, CONTENT_W * W - 0.5, 9, TEXT)
-    text(fig, MX + 0.03, top - ch + 0.018,
+    body_bottom = para(fig, MX + 0.03, top - 0.130, body, CONTENT_W * W - 0.6, 9, TEXT)
+    conf_y = body_bottom - 0.012
+    text(fig, MX + 0.03, conf_y,
          f"Model confidence score: {conf_genuine:.1f}% same writer / {conf_forged:.1f}% different writer "
          f"(a score, not a statistical probability)", 7.5, MUTED, va="center")
+    card_bottom = min(top - 0.195, conf_y - 0.020)
+    rect(fig, MX, card_bottom, CONTENT_W, top - card_bottom, WHITE, vcol, 2.0)
 
     # Case details table
     rows = [
@@ -431,7 +491,7 @@ def page_cover(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, c
         ("Model / pipeline", model_version_tag),
         ("Report generated", datetime.datetime.now().strftime("%B %d, %Y  %H:%M")),
     ]
-    y = 0.440
+    y = min(0.440, card_bottom - 0.030)
     text(fig, MX, y, "Case Details", 11, INK, "bold", va="center")
     y -= 0.022
     rh = 0.034
@@ -471,17 +531,17 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
     y = page_title(fig, "Case Summary", "The model result, supporting checks and key findings at a glance")
     vcol = verdict_color(verdict)
 
-    # Model result card
-    ch = 1.45 / H
+    # Model result card (grows with its note so the text always stays inside)
+    pct = 100.0 * avg_distance / threshold if threshold > 0 else 0.0
+    note = f"Distance is {pct:.0f}% of the threshold. Lower distance means more similar signatures."
+    note_w = (0.42 - MX - 0.02) * W - 0.25          # up to the gauge, with a gap
+    ch = max(1.45, 0.90 + para_height_in(note, note_w, 8.5) + 0.14) / H
     top = y
     rect(fig, MX, top - ch, CONTENT_W, ch, WHITE, BORDER, 1.0)
     text(fig, MX + 0.02, top - 0.20 / H, "MODEL RESULT", 8, MUTED, "bold", va="center")
     text(fig, MX + 0.02, top - 0.55 / H, VERDICT_LABELS.get(verdict, verdict), 22, vcol, "bold", va="center")
     text(fig, MX + 0.02, top - 0.76 / H, VERDICT_SUBTITLES.get(verdict, ""), 8.5, TEXT, va="center")
-    pct = 100.0 * avg_distance / threshold if threshold > 0 else 0.0
-    para(fig, MX + 0.02, top - 0.86 / H,
-         f"Distance is {pct:.0f}% of the threshold. Lower distance means more similar signatures.",
-         2.3, 8.5, MUTED)
+    para(fig, MX + 0.02, top - 0.90 / H, note, note_w, 8.5, MUTED)
     distance_gauge(fig, 0.42, top - 0.72 / H, 0.47, avg_distance, threshold, vcol)
     y = top - ch - 0.22 / H
 
@@ -509,15 +569,23 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
         if (not same and ratio >= 0.67) or (same and ratio <= 0.33):
             msg = ("The model result and the supporting checks point in different directions. "
                    "This case should be reviewed by a qualified document examiner before any conclusion is drawn.")
-            rect(fig, MX, y - 0.62 / H, CONTENT_W, 0.62 / H, WHITE, WARN, 1.4)
+            box_h = (0.30 + para_height_in(msg, CONTENT_W * W - 0.3, 9) + 0.12) / H
+            rect(fig, MX, y - box_h, CONTENT_W, box_h, WHITE, WARN, 1.4)
             text(fig, MX + 0.02, y - 0.16 / H, "REVIEW RECOMMENDED", 8, WARN, "bold", va="center")
-            para(fig, MX + 0.02, y - 0.27 / H, msg, CONTENT_W * W - 0.3, 9, TEXT)
-            y -= 0.62 / H + 0.30 / H
+            para(fig, MX + 0.02, y - 0.30 / H, msg, CONTENT_W * W - 0.3, 9, TEXT)
+            y -= box_h + 0.26 / H
 
     # Findings table: result, evidence strength and distance from the writer's normal
     deviation = findings.get("deviation", {}) or {}
-    cols = {"code": MX + 0.010, "name": MX + 0.055, "chip": MX + 0.262, "str": MX + 0.462, "track": MX + 0.615}
-    track_w = 1 - MX - 0.035 - cols["track"]
+    # Column positions follow the widest entry in each column, so longer labels never collide.
+    name_w = max(text_width_pt(FINDING_NAMES[c], 9, "bold") for c in FINDING_ORDER) / 72.0
+    chip_w = max(text_width_pt(key.get(f"{c}_label", "N/A"), 7.5, "bold") for c in FINDING_ORDER) / 72.0 + 0.28
+    str_w = max(text_width_pt("Evidence strength", 8, "bold"), text_width_pt("Decides the result", 7.5, "bold")) / 72.0
+    cols = {"code": MX + 0.010, "name": MX + 0.055}
+    cols["chip"] = cols["name"] + (name_w + 0.18) / W
+    cols["str"] = cols["chip"] + (chip_w + 0.18) / W
+    cols["track"] = cols["str"] + (str_w + 0.22) / W
+    track_w = 1 - MX - DEV_LABEL_IN / W - cols["track"]
     hh = 0.46 / H
     rect(fig, MX, y - hh, CONTENT_W, hh, SURFACE, BORDER, 0.8)
     yh = y - 0.15 / H
@@ -525,13 +593,35 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
     text(fig, cols["name"], y - hh / 2, "Finding", 8, MUTED, "bold", va="center")
     text(fig, cols["chip"], y - hh / 2, "Result", 8, MUTED, "bold", va="center")
     text(fig, cols["str"], y - hh / 2, "Evidence strength", 8, MUTED, "bold", va="center")
-    text(fig, cols["track"], yh, "Distance from this writer's normal", 8, MUTED, "bold", va="center")
+    text(fig, cols["track"], yh, "Distance from normal", 8, MUTED, "bold", va="center")
     yt = y - 0.33 / H
     text(fig, cols["track"], yt, "0", 7, MUTED, va="center")
     text(fig, cols["track"] + track_w / DEV_MAX, yt, "normal limit", 7, OK, "bold", ha="center", va="center")
     text(fig, cols["track"] + track_w, yt, "3×", 7, MUTED, ha="right", va="center")
     y -= hh
-    rh = 0.46 / H
+
+    # Fit the page: everything below the table must stay above the footer. Rows
+    # shrink first, then the "In plain words" type, then the closing line goes.
+    notes = ("Distance from normal: 0 is typical for this writer and the green zone is the normal range "
+             "(for F5, the model's threshold). Evidence strength: how well each check told genuine from forged "
+             "signatures in testing; the strongest checks deserve the most weight.")
+    plain = findings.get("plain", {}) or {}
+    order = [c for c in sorted(FINDING_ORDER, key=lambda c: (c != "f5", -(strength(c) or (0,))[0]))
+             if plain.get(c)]
+    sent_w = CONTENT_W * W - 0.55
+    tiers = ((8.5, 1.35, 0.07), (8.5, 1.25, 0.04), (8.0, 1.2, 0.03), (7.5, 1.15, 0.02))
+
+    def plain_h(tier) -> float:
+        return sum(para_height_in(plain[c], sent_w, tier[0], tier[1]) + tier[2] for c in order)
+
+    below_rows = 0.14 + para_height_in(notes, CONTENT_W * W, 8, 1.35) + (0.50 if order else 0.0)
+    room_in = y * H - _FINDINGS_BOTTOM_IN
+    rh_in = 0.34
+    for cand in (0.42, 0.38):
+        if len(FINDING_ORDER) * cand + below_rows + plain_h(tiers[-1]) + 0.30 <= room_in:
+            rh_in = cand
+            break
+    rh = rh_in / H
     for code in FINDING_ORDER:
         lab = key.get(f"{code}_label", "N/A")
         col = label_color(lab)
@@ -545,27 +635,23 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
         y -= rh
         hline(fig, MX, 1 - MX, y, BORDER, 0.8)
 
-    notes = ("Distance from normal: 0 is typical for this writer and the green zone is the normal range "
-             "(for F5, the model's threshold). Evidence strength: how well each check told genuine from forged "
-             "signatures in testing; the strongest checks deserve the most weight.")
     y = para(fig, MX, y - 0.14 / H, notes, CONTENT_W * W, 8, MUTED, spacing=1.35)
 
     # In plain words: one everyday sentence per finding, strongest evidence first
-    plain = findings.get("plain", {}) or {}
-    if plain:
-        y -= 0.34 / H
+    if order:
+        y -= 0.30 / H
         text(fig, MX, y, "In plain words", 11, INK, "bold", va="center")
         y -= 0.20 / H
-        order = sorted(FINDING_ORDER, key=lambda c: (c != "f5", -(strength(c) or (0,))[0]))
+        room = y * H - _FINDINGS_BOTTOM_IN
+        size, spacing, gap = next((t for t in tiers if plain_h(t) + 0.30 <= room), tiers[-1])
         for code in order:
-            if not plain.get(code):
-                continue
             col = label_color(key.get(f"{code}_label", "N/A"))
             dot(fig, MX + 0.06 / W, y - 0.07 / H, 0.08, col)
-            text(fig, MX + 0.16 / W, y, code.upper(), 8.5, BRAND, "bold", va="top")
-            y = para(fig, MX + 0.50 / W, y, plain[code], CONTENT_W * W - 0.55, 8.5, TEXT, spacing=1.35) - 0.07 / H
-    text(fig, MX, y - 0.14 / H, "The Findings pages show what each check measured, with pictures.",
-         8, MUTED, va="center")
+            text(fig, MX + 0.16 / W, y, code.upper(), size, BRAND, "bold", va="top")
+            y = para(fig, MX + 0.50 / W, y, plain[code], sent_w, size, TEXT, spacing=spacing) - gap / H
+    if y * H - 0.30 >= _FINDINGS_BOTTOM_IN:
+        text(fig, MX, y - 0.14 / H, "The Findings pages show what each check measured, with pictures.",
+             8, MUTED, va="center")
 
     _finish(fig, pdf, page_counter, total_pages, case_id)
 
@@ -585,13 +671,12 @@ _IMG_GAP = 0.14
 _CARD_GAP = 0.14
 _FINDINGS_TOP_IN = 1.64        # where page_title() lets content start (with subtitle)
 _FINDINGS_BOTTOM_IN = 0.68     # keep clear of the footer rule
-_HOW_TO_READ_H = 1.55
 _VISUAL_CODES = ("f1", "f2", "f3", "f4", "f7")
 _F1_ROWS = [("strokes", "Strokes"), ("bowls", "Closed loops"), ("dots", "Dots"), ("pen_lifts", "Pen lifts")]
 
 
 def _numbers_h(code: str) -> float:
-    return {"f1": 1.18, "f5": 0.92, "f7": 1.96}.get(code, 0.80)
+    return {"f1": 1.18, "f5": 1.10, "f7": 1.96}.get(code, 0.80)
 
 
 def _card_parts(code: str, findings: dict, visuals: Optional[dict]) -> dict:
@@ -727,28 +812,37 @@ def plan_findings_pages(findings: Optional[dict], visuals: Optional[dict] = None
             used = 0.0
         pages[-1].append(code)
         used += hc + _CARD_GAP
-    if used + _HOW_TO_READ_H > avail:
+    if used + _how_to_read_h() > avail:
         pages.append([])
     return pages
 
 
+_HOW_TO_READ_NOTES = [
+    "Bars: the green zone is what counts as normal for this writer, the blue band is the range seen in "
+    "the four references, and the marker is the questioned signature. A marker inside the green zone is "
+    "normal variation even if it sits outside the blue band.",
+    "Evidence strength shows how well that check told genuine from forged signatures when tested on "
+    "signatures the system had never seen. A weak check is easily fooled, so give it less weight than "
+    "a strong one.",
+    "Pictures: the reference shown is the most typical of the four. F5 and F6 both use the AI model: F5 "
+    "compares with the combined references, F6 with the writer's own variation, so their numbers differ.",
+]
+_HOW_TO_READ_TEXT_W = _CARD_W - 0.36
+
+
+def _how_to_read_h() -> float:
+    notes_h = sum(para_height_in(n, _HOW_TO_READ_TEXT_W, 8, 1.35) + 0.06 for n in _HOW_TO_READ_NOTES)
+    return 0.40 + notes_h + 0.10
+
+
 def _how_to_read(fig, y: float) -> None:
     W, H = _size(fig)
-    rect(fig, MX, y - _HOW_TO_READ_H / H, CONTENT_W, _HOW_TO_READ_H / H, SURFACE, BORDER, 0.8)
-    text(fig, MX + 0.02, y - 0.20 / H, "How to read these cards", 9.5, INK, "bold", va="center")
-    notes = [
-        "Bars: the green zone is what counts as normal for this writer, the blue band is the range seen in "
-        "the four references, and the marker is the questioned signature. A marker inside the green zone is "
-        "normal variation even if it sits outside the blue band.",
-        "Evidence strength shows how well that check told genuine from forged signatures when tested on "
-        "signatures the system had never seen. A weak check is easily fooled, so give it less weight than "
-        "a strong one.",
-        "Pictures: the reference shown is the most typical of the four. F5 and F6 both use the AI model: F5 "
-        "compares with the combined references, F6 with the writer's own variation, so their numbers differ.",
-    ]
-    yy = y - 0.36 / H
-    for n in notes:
-        yy = para(fig, MX + 0.02, yy, n, CONTENT_W * W - 0.3, 8, TEXT, spacing=1.35) - 0.06 / H
+    box_h = _how_to_read_h()
+    rect(fig, MX, y - box_h / H, CONTENT_W, box_h / H, SURFACE, BORDER, 0.8)
+    text(fig, MX + 0.18 / W, y - 0.20 / H, "How to read these cards", 9.5, INK, "bold", va="center")
+    yy = y - 0.40 / H
+    for n in _HOW_TO_READ_NOTES:
+        yy = para(fig, MX + 0.18 / W, yy, n, _HOW_TO_READ_TEXT_W, 8, TEXT, spacing=1.35) - 0.06 / H
 
 
 def page_findings(pdf, page_counter, total_pages, case_id, findings: Optional[dict], codes: List[str],
@@ -812,13 +906,15 @@ def page_explanation(pdf, page_counter, total_pages, case_id) -> None:
         ("Evidence strength", "How well a check told genuine from forged signatures in testing. Weak checks "
                               "are easily fooled; strong ones deserve more weight."),
     ]
-    rh = 0.40 / H
     hline(fig, MX, 1 - MX, y, INK, 1.0)
+    meaning_x = MX + 0.185
+    meaning_w = (1 - MX - meaning_x) * W - 0.08
     for term, meaning in terms:
+        lines = wrap(meaning, meaning_w, 8.5)
+        rh = max(0.34, lines_height_in(len(lines), 8.5, 1.3) + 0.12) / H
         y -= rh
         text(fig, MX + 0.01, y + rh / 2, term, 9, INK, "bold", va="center")
-        lines = wrap(meaning, (CONTENT_W - 0.22) * W, 8.5)[:2]
-        text(fig, MX + 0.20, y + rh / 2, "\n".join(lines), 8.5, TEXT, va="center", linespacing=1.3)
+        text(fig, meaning_x, y + rh / 2, "\n".join(lines), 8.5, TEXT, va="center", linespacing=1.3)
         hline(fig, MX, 1 - MX, y, BORDER, 0.8)
 
     _finish(fig, pdf, page_counter, total_pages, case_id)

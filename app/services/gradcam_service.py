@@ -5,28 +5,26 @@ compiled court-exhibit PDF report, and uploads assets to Azure Blob Storage.
 
 Compiled PDF format
 --------------------
-`export_compiled_pdf()` mirrors the report layout built in the
-AVERA_Pipeline7 notebook (Section 14, "Compiled Forensic PDF Report"):
+`export_compiled_pdf()` builds the report in this order (page layouts live in
+report_pages.py):
 
     Cover page
-    Section 1 -- Case Summary (verdict, confidence, F1-F7 at a glance)
-    Section 2 -- Visual Forensic Analysis (signatures, Grad-CAM overlay,
-                 overlay comparison, ink bounding box, forensic stroke map,
-                 per-marker stroke-difference crop table)
-    Section 3 -- Forensic Findings (F1-F7 full text report)
-    Section 4 -- Understanding This Report + Disclaimer
+    Case Summary (verdict, F1-F7 at a glance, plain-language sentences)
+    Forensic Findings (one F1-F7 card each, flowing over as many pages as needed)
+    Visual Evidence (signatures, Grad-CAM overlay, overlay comparison,
+                     ink bounding box, stroke map, per-marker stroke-difference table)
+    Understanding This Report + Glossary
+    Disclaimer
 
 The Grad-CAM page renders the heatmap blended over the actual signature
 (the same array used for the individual "_heatmap.png" export), not the
 raw masked activation map, so the signature stays visible under the
 heatmap on the exhibit page.
 
-F1-F7 findings are not computed in this service. `export_compiled_pdf()`
-accepts an optional `forensic_findings` dict shaped like the notebook's
-`forensic_json` output (`key_findings` + `modal_observations`, see
-`_build_f1f7_report_lines()` below for the exact keys read). Pass the
-real output of your F1-F7 service through that parameter; if omitted,
-Section 3 is rendered with "N/A" placeholders instead of failing.
+F1-F7 are computed by forensic_findings_service.compute_forensic_findings
+(called from `_compute_findings()` below) unless the caller passes a ready
+`forensic_findings` dict. If computing them fails, the report still renders,
+with "N/A" in place of the findings.
 """
 
 import asyncio
@@ -773,10 +771,8 @@ def _generate_overlay_comparison(ref_pil: Image.Image, query_pil: Image.Image) -
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Compiled court-exhibit PDF -- page builders
-# Ported from AVERA_Pipeline7 notebook, Section 14 ("Compiled Forensic PDF
-# Report"). Each helper takes the state it needs as explicit parameters
-# instead of relying on notebook-cell globals.
+# Compiled court-exhibit PDF -- page builders for the visual-evidence pages.
+# Each helper takes the state it needs as explicit parameters.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _verdict_color(verdict: str) -> str:

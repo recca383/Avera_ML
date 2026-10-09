@@ -29,8 +29,8 @@ logger = get_logger(__name__)
 def get_ink_bbox(gray_np: np.ndarray, pad: int = 6) -> tuple[int, int, int, int]:
     """
     (left, top, right, bottom) box around the ink, expanded by `pad` px.
-    Same logic as the Pipeline 32 CropToInk transform; returns the full image
-    when no ink is found.
+    Mirrors the CropToInk step of the Pipeline 32 training transforms (Otsu
+    ink mask, then pad); returns the full image when no ink is found.
     """
     _, binary = cv2.threshold(gray_np, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     coords = np.argwhere(binary > 0)
@@ -133,8 +133,8 @@ class PreprocessingService:
         """
         Resize the image with aspect ratio preserved and add a white pad.
 
-        This mirrors the notebook pipeline: the longest side is scaled to the
-        target size, the image is centered on a white square canvas, and the
+        This mirrors the ResizeWithPad training transform: the longest side is
+        scaled to the target size, the image is centered on a white square canvas, and the
         paste boundary is softened with a small Gaussian blur mask so the CNN
         does not learn a hard white border edge.
         """

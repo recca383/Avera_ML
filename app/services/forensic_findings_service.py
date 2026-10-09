@@ -216,7 +216,7 @@ def compute_forensic_findings(
     names1 = {"strokes": "strokes", "bowls": "closed loops", "dots": "dots", "pen_lifts": "pen lifts"}
     for key in ("strokes", "bowls", "dots", "pen_lifts"):
         lo, hi = min(x[key] for x in r1), max(x[key] for x in r1)
-        f1_counts[key] = {"q": q1[key], "min": lo, "max": hi}
+        f1_counts[key] = {"q": q1[key], "min": lo, "max": hi, "tol": T["count_tolerance"]}
         if q1[key] < lo - T["count_tolerance"] or q1[key] > hi + T["count_tolerance"]:
             diffs.append(f"{names1[key]} ({q1[key]} vs. {lo}-{hi})")
     f1_label = "Consistent" if not diffs else "Different"

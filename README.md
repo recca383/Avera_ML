@@ -109,7 +109,7 @@ Run the full signature verification pipeline.
   "confidence_genuine": 94.25,
   "confidence_forged": 5.75,
   "distance": 0.214562,
-  "threshold": 0.485123,
+  "threshold": 0.6851,
   "gradcam_blob_id": "gradcam-output/Case_001/a3f9c12d8b4e.png"
 }
 ```
@@ -266,7 +266,7 @@ az containerapp update \
 | `AZURE_STORAGE_CONNECTION_STRING` | ✅ | — | Azure Storage connection string |
 | `AZURE_STORAGE_CONTAINER` | ✅ | — | Blob container name |
 | `MODEL_PATH` | | `app/ml/exported_model/siamese_signature_model.pt` | Path to the Siamese state-dict model |
-| `INFERENCE_THRESHOLD` | | `0.485123` | Distance threshold for GENUINE/FORGED classification |
+| `INFERENCE_THRESHOLD` | | `0.6851` | Distance threshold for GENUINE/FORGED classification (Pipeline 32 validation 4:1 EER) |
 | `ENVIRONMENT` | | `production` | `development` / `staging` / `production` |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `LOG_FORMAT` | | `json` | `json` (production) or `text` (development) |

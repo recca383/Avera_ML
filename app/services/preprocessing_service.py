@@ -1,20 +1,21 @@
 """
 Preprocessing service.
 Converts raw image bytes (downloaded from Azure Blob Storage) into inverted,
-normalised PyTorch tensors ready for Pipeline 10 Siamese network inference.
+normalised PyTorch tensors ready for Pipeline 32 Siamese network inference.
 
 Design decisions
 ----------------
 - All processing is done in-memory using NumPy + PIL; no temp files are written.
-- Images are converted to greyscale and inverted to ink-on-black (single
-    channel) to match the Pipeline 10 training pipeline.
-- The preprocessing pipeline mirrors the transforms used during training to
-  avoid train/inference distribution mismatch.
+- The pipeline mirrors the Pipeline 32 training transforms exactly, to avoid
+  train/inference distribution mismatch:
+    load grayscale -> whiten 8 px border -> CropToInk(pad=6)
+    -> ResizeWithPad(224) -> invert -> ToTensor -> Normalize(0.5, 0.5)
 """
 
 import io
 from typing import List
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageFilter, ImageOps
@@ -23,6 +24,27 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def get_ink_bbox(gray_np: np.ndarray, pad: int = 6) -> tuple[int, int, int, int]:
+    """
+    (left, top, right, bottom) box around the ink, expanded by `pad` px.
+    Same logic as the Pipeline 32 CropToInk transform; returns the full image
+    when no ink is found.
+    """
+    _, binary = cv2.threshold(gray_np, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    coords = np.argwhere(binary > 0)
+    if len(coords) == 0:
+        return 0, 0, gray_np.shape[1], gray_np.shape[0]
+    y_min, x_min = coords.min(axis=0)
+    y_max, x_max = coords.max(axis=0)
+    H, W = gray_np.shape
+    return (
+        int(max(0, x_min - pad)),
+        int(max(0, y_min - pad)),
+        int(min(W, x_max + pad)),
+        int(min(H, y_max + pad)),
+    )
 
 
 class PreprocessingService:
@@ -39,7 +61,7 @@ class PreprocessingService:
             self._settings.MODEL_INPUT_SIZE,
         )
 
-        # Match Pipeline 10: inverted grayscale images normalised to 0.5/0.5.
+        # Match Pipeline 32: inverted grayscale images normalised to 0.5/0.5.
         self._mean = 0.5
         self._std = 0.5
 
@@ -59,6 +81,7 @@ class PreprocessingService:
         """
         pil_image = self._load_pil_image(image_bytes)
         pil_image = self._clean_border(pil_image)
+        pil_image = self._crop_to_ink(pil_image)
         pil_image = self._resize_and_pad(pil_image)
         tensor = self._to_tensor(pil_image)               # (1, H, W), ink-on-black
         tensor = self._normalise(tensor)
@@ -77,6 +100,7 @@ class PreprocessingService:
         """Return a PIL Image (RGB) for Grad-CAM overlay generation."""
         img = self._load_pil_image(image_bytes)
         img = self._clean_border(img)
+        img = self._crop_to_ink(img)
         img = self._resize_and_pad(img)
         return img.convert("RGB")
 
@@ -89,7 +113,7 @@ class PreprocessingService:
         except Exception as exc:
             raise ValueError(f"Cannot decode image bytes: {exc}") from exc
 
-    def _clean_border(self, img: Image.Image, border: int = 4) -> Image.Image:
+    def _clean_border(self, img: Image.Image, border: int = 8) -> Image.Image:
         """Remove scanner/edge artefacts by whitening the image border."""
         img = img.convert("L")
         img_np = np.array(img)
@@ -98,6 +122,12 @@ class PreprocessingService:
         img_np[:, :border] = 255
         img_np[:, -border:] = 255
         return Image.fromarray(img_np)
+
+    @staticmethod
+    def _crop_to_ink(img: Image.Image, pad: int = 6) -> Image.Image:
+        """Crop to the ink bounding box (Pipeline 32 CropToInk)."""
+        img = img.convert("L")
+        return img.crop(get_ink_bbox(np.array(img), pad=pad))
 
     def _resize_and_pad(self, img: Image.Image) -> Image.Image:
         """

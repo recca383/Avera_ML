@@ -62,7 +62,7 @@ class ProcessResponse(BaseModel):
             "confidence_genuine": 94.25,
             "confidence_forged": 5.75,
             "distance": 0.214562,
-            "threshold": 0.485123,
+            "threshold": 0.6851,
             "gradcam_blob_ids": ["gradcam-output/case-001/query_case-001_original.png"],
             "uploaded_blobs_ids": ["gradcam-output/case-001/query_case-001_original.png"],
         }

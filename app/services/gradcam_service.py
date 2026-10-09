@@ -11,7 +11,7 @@ report_pages.py):
     Cover page
     Case Summary (verdict, F1-F7 at a glance, plain-language sentences)
     Forensic Findings (one F1-F7 card each, flowing over as many pages as needed)
-    Visual Evidence (signatures, Grad-CAM heatmaps [headed "Visual Aid"], overlay
+    Visual Aid (signatures, Grad-CAM heatmaps, overlay
                      comparison, ink bounding box, stroke map, per-marker stroke-difference table)
     Understanding This Report + Glossary
     Disclaimer
@@ -894,7 +894,7 @@ def _page_stroke_crop_table(rows, title, pdf, page_counter, total_pages, case_id
     for page_idx in range(n_pages):
         chunk = rows[page_idx * rows_per_page:(page_idx + 1) * rows_per_page]
         fig = plt.figure(figsize=(W, H), facecolor=rp.WHITE)
-        rp.chrome(fig, case_id, "Visual Evidence")
+        rp.chrome(fig, case_id, "Visual Aid")
         page_t = title if n_pages == 1 else f"{title} (page {page_idx + 1} of {n_pages})"
         y0 = rp.page_title(fig, page_t,
                            "Solid gray border = the specimen has ink at this point. "
@@ -996,7 +996,7 @@ def export_compiled_pdf(
             rp.page_findings(pdf, page_counter, total_pages, case_id, forensic_findings, codes,
                              visuals=finding_visuals, first=i == 0, last=i == len(findings_pages) - 1)
 
-        section = "Visual Evidence"
+        section = "Visual Aid"
         _page_grid(pdf, page_counter, total_pages, case_id, section, "Signature Overview",
                    "The four genuine references and the questioned signature side by side",
                    orig_pils, image_labels,
@@ -1006,8 +1006,8 @@ def export_compiled_pdf(
                    "Regions that most increased the distance from this writer's references",
                    blends, image_labels,
                    "Warm colours mark regions that made the questioned signature less similar to the references "
-                   "(for each reference: less similar to the other three). Blank areas can be warm where an "
-                   "expected stroke is missing. This is a visual aid, not proof of forgery.")
+                   "(for each reference: less similar to the other three). Blank areas can be warm where the "
+                   "references have ink in a different place. This is a visual aid, not proof of forgery.")
         _page_grid(pdf, page_counter, total_pages, case_id, section, "Overlay Comparison",
                    "The questioned signature laid over each reference signature",
                    overlay_comparisons, ["Versus Reference 1", "Versus Reference 2",

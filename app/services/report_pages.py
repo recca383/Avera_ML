@@ -3,7 +3,7 @@ Report design system + portrait pages for the AVERA compiled PDF.
 
 Design rules
 ------------
-* Font: Arial (falls back to Liberation Sans / DejaVu Sans if Arial is not installed).
+* Font: Sora (falls back to a metric-compatible sans font if Sora is not installed).
 * Brand colour #1E6FD9 for headers, accents and neutral highlights.
 * Solid fills and borders only: no gradients, shadows or transparency.
 * Status colours are used sparingly (green = consistent, amber = differs,
@@ -25,10 +25,10 @@ from matplotlib.patches import Ellipse, Polygon, Rectangle
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
 def _pick_font() -> List[str]:
-    """Arial if installed, else the closest metric-compatible font (no missing-font warnings)."""
+    """Sora if installed, else the closest metric-compatible font."""
     from matplotlib import font_manager
     installed = {f.name for f in font_manager.fontManager.ttflist}
-    for name in ("Arial", "Liberation Sans", "Helvetica", "Nimbus Sans"):
+    for name in ("Sora", "Arial", "Liberation Sans", "Helvetica", "Nimbus Sans"):
         if name in installed:
             return [name, "DejaVu Sans"]
     return ["DejaVu Sans"]
@@ -44,6 +44,13 @@ MUTED = "#6B7280"
 BORDER = "#D1D5DB"
 SURFACE = "#F3F6FB"
 WHITE = "#FFFFFF"
+
+# Type scale: keep report content to a small set of predictable reading levels.
+TYPE_TITLE = 12.0
+TYPE_SECTION = 9.5
+TYPE_BODY = 8.5
+TYPE_LABEL = 7.5
+TYPE_FOOTNOTE = 7.0
 
 OK = "#15803D"
 WARN = "#B45309"
@@ -167,15 +174,14 @@ def para_height_in(s: str, width_in: float, size: float, spacing: float = 1.4) -
     return len(wrap(s, width_in, size)) * size * spacing / 72.0
 
 
-def chip(fig, x_anchor, y_center, label: str, color: str, size=8.5, align: str = "right") -> None:
-    """Bordered status label with a colour dot, anchored at x_anchor (left or right edge)."""
+def chip(fig, x_anchor, y_center, label: str, color: str, size=TYPE_BODY, align: str = "right") -> None:
+    """Bordered status label anchored at x_anchor (left or right edge)."""
     W, H = _size(fig)
     w_in = len(label) * size / 72.0 * 0.56 + 0.42
     h_in = 0.26
     x0 = x_anchor - w_in / W if align == "right" else x_anchor
     rect(fig, x0, y_center - h_in / 2 / H, w_in / W, h_in / H, WHITE, color, 1.2)
-    dot(fig, x0 + 0.15 / W, y_center, 0.09, color)
-    text(fig, x0 + 0.28 / W, y_center, label, size, color, "bold", va="center")
+    text(fig, x0 + 0.14 / W, y_center, label, size, color, "bold", va="center")
 
 
 # ── Page chrome ───────────────────────────────────────────────────────────────
@@ -260,7 +266,7 @@ def range_bar(fig, x, y, w, value: Optional[float], ref_min: Optional[float], re
     """
     W, H = _size(fig)
     if value is None or ref_min is None or ref_max is None:
-        text(fig, x, y, "Not available", 8, MUTED, va="center")
+        text(fig, x, y, "Not available", TYPE_BODY, MUTED, va="center")
         return
     if ok_lo is not None and ok_hi is not None:
         # Colour by this bar's own zone: a card can combine several measures
@@ -280,11 +286,11 @@ def range_bar(fig, x, y, w, value: Optional[float], ref_min: Optional[float], re
     mx = px(value)
     vline(fig, mx, y - 0.15 / H, y + 0.15 / H, color, 3.0, z=4)
     ha = "right" if mx > x + w * 0.75 else ("left" if mx < x + w * 0.25 else "center")
-    text(fig, mx, y + 0.20 / H, f"Questioned {fmt.format(value)}", 8, color, "bold", ha=ha, va="bottom")
+    text(fig, mx, y + 0.20 / H, f"Questioned {fmt.format(value)}", TYPE_BODY, color, "bold", ha=ha, va="bottom")
     cap = f"References {fmt.format(ref_min)} to {fmt.format(ref_max)}"
     if ok_lo is not None and ok_hi is not None:
-        cap += f"   ·   Normal {fmt.format(ok_lo)} to {fmt.format(ok_hi)}"
-    text(fig, x, y - 0.22 / H, cap, 7.5, MUTED, va="top")
+        cap += f"   Normal {fmt.format(ok_lo)} to {fmt.format(ok_hi)}"
+    text(fig, x, y - 0.22 / H, cap, TYPE_LABEL, MUTED, va="top")
 
 
 # Test-split AUC of each supporting check: how well it separated genuine from
@@ -309,17 +315,14 @@ def text_width_in(fig, t) -> float:
     return t.get_window_extent(renderer=fig.canvas.get_renderer()).width / fig.dpi
 
 
-def strength_badge(fig, x, y, code: str, suffix: str = " evidence", size: float = 7.5) -> None:
-    """Three dots (filled = stronger evidence) plus a word, left-aligned at x, centred on y."""
-    W, _ = _size(fig)
+def strength_badge(fig, x, y, code: str, suffix: str = " evidence", size: float = TYPE_LABEL) -> None:
+    """Plain-language evidence strength label, left-aligned at x."""
     s = strength(code)
     if s is None:
         text(fig, x, y, "Decides the result", size, MUTED, "bold", va="center")
         return
-    n, word = s
-    for i in range(3):
-        dot(fig, x + (0.05 + i * 0.12) / W, y, 0.085, BRAND if i < n else BORDER)
-    text(fig, x + 0.40 / W, y, word + suffix, size, MUTED, "bold", va="center")
+    _, word = s
+    text(fig, x, y, word + suffix, size, MUTED, "bold", va="center")
 
 
 DEV_MAX = 3.0   # deviation tracks run from 0 (typical) to 3x the edge of normal
@@ -347,7 +350,7 @@ def dot_strip(fig, x, y, w, pairs: List[float], value: Optional[float], ok_hi: O
     """F6: each genuine-vs-genuine distance as a dot, the questioned distance as a marker."""
     W, H = _size(fig)
     if value is None or ok_hi is None or not pairs:
-        text(fig, x, y, "Not available", 8, MUTED, va="center")
+        text(fig, x, y, "Not available", TYPE_BODY, MUTED, va="center")
         return
     color = OK if value <= ok_hi else WARN
     dom = max(ok_hi, value, max(pairs)) * 1.08
@@ -355,20 +358,22 @@ def dot_strip(fig, x, y, w, pairs: List[float], value: Optional[float], ok_hi: O
     th = 0.16 / H
     rect(fig, x, y - th / 2, w, th, SURFACE, BORDER, 0.8)
     rect(fig, x, y - th / 2, px(ok_hi) - x, th, OK_FILL, "none", z=1)
-    for p in pairs:
-        dot(fig, px(p), y, 0.09, BRAND)
+    pair_min, pair_max = min(pairs), max(pairs)
+    bh = th * 0.5
+    rect(fig, px(pair_min), y - bh / 2, max(px(pair_max) - px(pair_min), 0.004), bh,
+         BRAND_LIGHT, BRAND, 0.8, z=2)
     mx = px(value)
     vline(fig, mx, y - 0.15 / H, y + 0.15 / H, color, 3.0, z=4)
     ha = "right" if mx > x + w * 0.75 else ("left" if mx < x + w * 0.25 else "center")
-    text(fig, mx, y + 0.20 / H, f"Questioned {fmt.format(value)}", 8, color, "bold", ha=ha, va="bottom")
-    text(fig, x, y - 0.22 / H, f"Blue dots = genuine vs. genuine   ·   Normal up to {fmt.format(ok_hi)}",
-         7.5, MUTED, va="top")
+    text(fig, mx, y + 0.20 / H, f"Questioned {fmt.format(value)}", TYPE_BODY, color, "bold", ha=ha, va="bottom")
+    text(fig, x, y - 0.22 / H, f"Reference range shown in blue. Normal up to {fmt.format(ok_hi)}",
+         TYPE_LABEL, MUTED, va="top")
 
 
 def image_cell(fig, x, y_top, w_in, h_in, img, label: str, caption: str, label_color: str = MUTED) -> None:
     """Labelled image (letterboxed, thin border) with a caption underneath."""
     W, H = _size(fig)
-    text(fig, x, y_top, label, 7.5, label_color, "bold", va="top")
+    text(fig, x, y_top, label, TYPE_LABEL, label_color, "bold", va="top")
     ax = fig.add_axes((x, y_top - (0.17 + h_in) / H, w_in / W, h_in / H))
     ax.imshow(img, interpolation="lanczos")
     ax.set_anchor("W")              # letterbox to the left so the image lines up with its label
@@ -377,7 +382,7 @@ def image_cell(fig, x, y_top, w_in, h_in, img, label: str, caption: str, label_c
     for spine in ax.spines.values():
         spine.set_color(BORDER)
         spine.set_linewidth(0.8)
-    text(fig, x, y_top - (0.17 + h_in + 0.06) / H, caption, 7.5, TEXT, va="top")
+    text(fig, x, y_top - (0.17 + h_in + 0.06) / H, caption, TYPE_LABEL, TEXT, va="top")
 
 
 # ── Cover page ────────────────────────────────────────────────────────────────
@@ -588,9 +593,9 @@ def _card_parts(code: str, findings: dict, visuals: Optional[dict]) -> dict:
     vis = (visuals or {}).get(code) if code in _VISUAL_CODES else None
     full_w = _CARD_W - 2 * _PADX
 
-    explain_h = para_height_in(FINDING_EXPLAIN[code], full_w, 8, 1.35)
-    plain_h = para_height_in(plain, full_w, 10.5, 1.3) if plain else 0.0
-    details_h = 0.17 + para_height_in(obs, _RIGHT_W, 8, 1.35)
+    explain_h = para_height_in(FINDING_EXPLAIN[code], full_w, TYPE_BODY, 1.35)
+    plain_h = para_height_in(plain, full_w, TYPE_SECTION, 1.3) if plain else 0.0
+    details_h = 0.17 + para_height_in(obs, _RIGHT_W, TYPE_BODY, 1.35)
     if vis:
         legend = str(vis.get("legend") or "")
         left_h = 0.17 + _IMG_H + 0.24 + (para_height_in(legend, _LEFT_W, 7, 1.3) if legend else 0)
@@ -615,11 +620,11 @@ def _draw_numbers(fig, code: str, x: float, top: float, w_in: float, ranges: dic
         counts = ranges.get("f1") or {}
         cx = [0.0, 1.05, 1.75, 2.50]
         for off, head in zip(cx, ("Feature", "Questioned", "References", "Normal")):
-            text(fig, x + off / W, top - 0.10 / H, head, 7.5, MUTED, "bold", va="center")
+            text(fig, x + off / W, top - 0.10 / H, head, TYPE_LABEL, MUTED, "bold", va="center")
         for i, (k, nm) in enumerate(_F1_ROWS):
             ry = top - (0.36 + i * 0.22) / H
             hline(fig, x, x + w, ry + 0.11 / H, BORDER, 0.6)
-            text(fig, x, ry, nm, 8.5, TEXT, va="center")
+            text(fig, x, ry, nm, TYPE_BODY, TEXT, va="center")
             c = counts.get(k)
             if not c:
                 continue
@@ -627,8 +632,8 @@ def _draw_numbers(fig, code: str, x: float, top: float, w_in: float, ranges: dic
             inside = lo <= c["q"] <= hi
             text(fig, x + cx[1] / W, ry, str(c["q"]), 9, OK if inside else WARN, "bold", va="center")
             rng = f"{c['min']}" if c["min"] == c["max"] else f"{c['min']} to {c['max']}"
-            text(fig, x + cx[2] / W, ry, rng, 8.5, TEXT, va="center")
-            text(fig, x + cx[3] / W, ry, f"{max(lo, 0)} to {hi}", 8.5, MUTED, va="center")
+            text(fig, x + cx[2] / W, ry, rng, TYPE_BODY, TEXT, va="center")
+            text(fig, x + cx[3] / W, ry, f"{max(lo, 0)} to {hi}", TYPE_BODY, MUTED, va="center")
     elif code == "f5":
         r = ranges.get("f5") or {}
         if r:
@@ -641,7 +646,7 @@ def _draw_numbers(fig, code: str, x: float, top: float, w_in: float, ranges: dic
                                                ("f7_width", "Line-width variation", "{:.2f}"))):
             r = ranges.get(key) or {}
             t0 = top - i * 1.0 / H
-            text(fig, x, t0 - 0.06 / H, title, 7.5, MUTED, "bold", va="center")
+            text(fig, x, t0 - 0.06 / H, title, TYPE_LABEL, MUTED, "bold", va="center")
             range_bar(fig, x, t0 - 0.56 / H, w, r.get("q"), r.get("min"), r.get("max"), col, fmt,
                       r.get("ok_lo"), r.get("ok_hi"))
     else:
@@ -661,21 +666,19 @@ def _card(fig, top: float, code: str, findings: dict, visuals: Optional[dict] = 
     col = label_color(label)
     h = parts["height"] / H
     rect(fig, MX, top - h, CONTENT_W, h, WHITE, BORDER, 1.0)
-    rect(fig, MX, top - h, 0.05 / W, h, col, "none", z=1)      # status accent stripe
-
     x0 = MX + _PADX / W
     yh = top - 0.24 / H
-    text(fig, x0, yh, code.upper(), 12, BRAND, "bold", va="center")
-    t_name = text(fig, x0 + 0.42 / W, yh, FINDING_NAMES[code], 12, INK, "bold", va="center")
-    strength_badge(fig, x0 + (0.42 + text_width_in(fig, t_name) + 0.22) / W, yh, code)
+    text(fig, x0, yh, code.upper(), TYPE_TITLE, BRAND, "bold", va="center")
+    t_name = text(fig, x0 + 0.42 / W, yh, FINDING_NAMES[code], TYPE_TITLE, INK, "bold", va="center")
+    strength_badge(fig, x0 + (0.42 + text_width_in(fig, t_name) + 0.22) / W, yh, code, size=TYPE_LABEL)
     chip(fig, 1 - MX - _PADX / W, yh, label, col)
 
     full_w = _CARD_W - 2 * _PADX
     y = top - _HEADER_H / H
-    para(fig, x0, y, FINDING_EXPLAIN[code], full_w, 8, MUTED, spacing=1.35)
+    para(fig, x0, y, FINDING_EXPLAIN[code], full_w, TYPE_BODY, MUTED, spacing=1.35)
     y -= (parts["explain_h"] + 0.08) / H
     if parts["plain"]:
-        para(fig, x0, y, parts["plain"], full_w, 10.5, INK, spacing=1.3)
+        para(fig, x0, y, parts["plain"], full_w, TYPE_SECTION, INK, spacing=1.3)
     hline(fig, x0, 1 - MX - _PADX / W, top - (parts["body_top"] - 0.08) / H, BORDER, 0.6)
 
     body = top - parts["body_top"] / H
@@ -693,8 +696,8 @@ def _card(fig, top: float, code: str, findings: dict, visuals: Optional[dict] = 
     else:
         _draw_numbers(fig, code, x0, body, _LEFT_W, ranges, col)
         details_top = body
-    text(fig, xr, details_top, "MEASUREMENT DETAILS", 7, MUTED, "bold", va="top")
-    para(fig, xr, details_top - 0.17 / H, parts["obs"], _RIGHT_W, 8, TEXT, spacing=1.35)
+    text(fig, xr, details_top, "MEASUREMENT DETAILS", TYPE_LABEL, MUTED, "bold", va="top")
+    para(fig, xr, details_top - 0.17 / H, parts["obs"], _RIGHT_W, TYPE_BODY, TEXT, spacing=1.35)
     return top - h
 
 
@@ -728,9 +731,9 @@ def _how_to_read(fig, y: float) -> None:
         "Bars: the green zone is what counts as normal for this writer, the blue band is the range seen in "
         "the four references, and the marker is the questioned signature. A marker inside the green zone is "
         "normal variation even if it sits outside the blue band.",
-        "Evidence strength (dots next to each title) shows how well that check told genuine from forged "
-        "signatures when tested on signatures the system had never seen. A weak check is easily fooled, so "
-        "give it less weight than a strong one.",
+        "Evidence strength shows how well that check told genuine from forged signatures when tested on "
+        "signatures the system had never seen. A weak check is easily fooled, so give it less weight than "
+        "a strong one.",
         "Pictures: the reference shown is the most typical of the four. F5 and F6 both use the AI model: F5 "
         "compares with the combined references, F6 with the writer's own variation, so their numbers differ.",
     ]
@@ -745,7 +748,7 @@ def page_findings(pdf, page_counter, total_pages, case_id, findings: Optional[di
     _, H = PAGE_W, PAGE_H
     findings = findings or {}
     fig = _new_page(case_id, "Forensic Findings")
-    y = page_title(fig, "Forensic Findings (F1-F7)" + ("" if first else "  continued"),
+    y = page_title(fig, "Forensic Findings (F1-F7)",
                    "What each check measured, what it found, and how much weight it deserves")
     for code in codes:
         y = _card(fig, y, code, findings, visuals) - _CARD_GAP / H
@@ -818,8 +821,8 @@ def page_disclaimer(pdf, page_counter, total_pages, case_id) -> None:
     fig = _new_page(case_id, "Disclaimer")
     y = page_title(fig, "Disclaimer", "Please read before relying on this report")
     items = [
-        "AVERA is an automated, offline signature verification system developed as part of an academic thesis "
-        "project. It is a research prototype, not a certified or legally accredited forensic tool.",
+        "AVERA is an assistive tool for signature verification and forensic analysis. It supports careful "
+        "review and should not be treated as a certified or legally accredited forensic tool.",
         "The findings in this report (F1 to F7, the model result and the confidence score) come from computer "
         "measurements and a trained neural network. The cut-offs used to label F1 to F7 were calibrated "
         "statistically on validation data so that about 1 in 20 genuine signatures is flagged on each check; "
@@ -833,7 +836,7 @@ def page_disclaimer(pdf, page_counter, total_pages, case_id) -> None:
         "Results can vary with scan or photo quality, signature complexity, and the writer's natural "
         "variability. A result reflects the balance of computed evidence at the time of analysis and does not "
         "express certainty.",
-        "This system and report were developed for academic research by the AVERA thesis research team.",
+        "This system and report are intended to support careful review of signature evidence.",
     ]
     tw = CONTENT_W * W - 0.75
     total_h = sum(para_height_in(t, tw, 9.5, 1.5) + 0.20 for t in items) + 0.25

@@ -307,7 +307,7 @@ def _warp_reference(ref_gray: np.ndarray, warp: np.ndarray) -> np.ndarray:
         (width, height),
         flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
         borderMode=cv2.BORDER_CONSTANT,
-        borderValue=255,
+        borderValue=(255.0,),
     )
 
 
@@ -344,12 +344,14 @@ def _estimate_alignment(ref_gray: np.ndarray, query_gray: np.ndarray) -> np.ndar
     candidates = [identity, moment_fit]
     try:
         criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-5)
-        _, ecc_fit = cv2.findTransformECC(
-            query_ink, ref_ink, moment_fit.copy(), cv2.MOTION_AFFINE, criteria, None, 5
+        full_mask = np.ones(query_ink.shape, dtype=np.uint8)  # use every pixel
+        _, ecc_raw = cv2.findTransformECC(
+            query_ink, ref_ink, moment_fit.copy(), cv2.MOTION_AFFINE, criteria, full_mask, 5
         )
+        ecc_fit = np.asarray(ecc_raw, dtype=np.float32)
         singular_values = np.linalg.svd(ecc_fit[:, :2], compute_uv=False)
         if singular_values.min() > 0.6 and singular_values.max() < 1.6:
-            candidates.append(ecc_fit.astype(np.float32))
+            candidates.append(ecc_fit)
     except cv2.error:
         pass
 

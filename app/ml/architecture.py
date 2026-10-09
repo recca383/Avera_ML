@@ -10,7 +10,12 @@ from torch import nn
 
 
 class Backbone(nn.Module):
-    def __init__(self, input_channels: int = 1, embedding_dim: int = 128) -> None:
+    def __init__(
+        self,
+        input_channels: int = 1,
+        embedding_dim: int = 128,
+        hidden_dim: int = 256,
+    ) -> None:
         super().__init__()
 
         self.conv_layers = nn.Sequential(
@@ -55,10 +60,10 @@ class Backbone(nn.Module):
 
         self.fc_layers = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(4096, 256),
+            nn.Linear(4096, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.5),
-            nn.Linear(256, embedding_dim),
+            nn.Linear(hidden_dim, embedding_dim),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -69,9 +74,18 @@ class Backbone(nn.Module):
 
 
 class SiameseNineNet(nn.Module):
-    def __init__(self, embedding_dim: int = 128, input_channels: int = 1) -> None:
+    def __init__(
+        self,
+        embedding_dim: int = 128,
+        input_channels: int = 1,
+        hidden_dim: int = 256,
+    ) -> None:
         super().__init__()
-        self.backbone = Backbone(input_channels=input_channels, embedding_dim=embedding_dim)
+        self.backbone = Backbone(
+            input_channels=input_channels,
+            embedding_dim=embedding_dim,
+            hidden_dim=hidden_dim,
+        )
 
     def forward(
         self,

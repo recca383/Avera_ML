@@ -265,7 +265,7 @@ az containerapp update \
 |---|---|---|---|
 | `AZURE_STORAGE_CONNECTION_STRING` | ✅ | — | Azure Storage connection string |
 | `AZURE_STORAGE_CONTAINER` | ✅ | — | Blob container name |
-| `MODEL_PATH` | | `app/ml/exported_model/siamese_signature_model.pt` | Path to TorchScript model |
+| `MODEL_PATH` | | `app/ml/exported_model/siamese_signature_model.pt` | Path to the Siamese state-dict model |
 | `INFERENCE_THRESHOLD` | | `0.485123` | Distance threshold for GENUINE/FORGED classification |
 | `ENVIRONMENT` | | `production` | `development` / `staging` / `production` |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
@@ -279,7 +279,7 @@ az containerapp update \
 
 ## Model Export Guide
 
-Export your trained Siamese model from Google Colab as a **TorchScript** module:
+Export your trained Siamese model from Google Colab as a state dict:
 
 ```python
 # In Colab, after training:
@@ -287,13 +287,7 @@ import torch
 
 model.eval()
 
-# Option A — TorchScript (recommended for production)
-example_input = torch.randn(1, 1, 224, 224)   # adjust channels/size to match your model
-scripted = torch.jit.trace(model, example_input)
-torch.jit.save(scripted, "siamese_signature_model.pt")
-
-# Option B — state_dict only (requires the Python class at load time)
-torch.save(model.state_dict(), "siamese_signature_model_weights.pt")
+torch.save(model.state_dict(), "siamese_signature_model.pt")
 ```
 
 Place the exported `.pt` file at:
@@ -301,8 +295,9 @@ Place the exported `.pt` file at:
 app/ml/exported_model/siamese_signature_model.pt
 ```
 
-If you used Option B, uncomment the alternative loader block in `app/ml/model_loader.py`
-and provide your model class in `app/ml/architecture.py`.
+The loader reconstructs `SiameseNineNet` and infers its hidden and embedding
+dimensions from the saved layer shapes, so updated compatible checkpoints can
+use a different embedding size without changing the upload path.
 
 ---
 

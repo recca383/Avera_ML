@@ -20,6 +20,7 @@ azure-keyvault-secrets==4.9.0
 # replace these two lines with the appropriate CUDA wheel index:
 #   --index-url https://download.pytorch.org/whl/cu121
 #   torch==2.5.1+cu121
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu ; sys_platform != "darwin"
 torch==2.5.1 ; sys_platform == "darwin"
 torchvision==0.20.1+cpu ; sys_platform != "darwin"

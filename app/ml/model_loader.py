@@ -6,12 +6,9 @@ of the process.
 
 Design decisions
 ----------------
-- torch.jit.load() is used to load a TorchScript-exported model, which is the
-  recommended export format for production PyTorch deployments (no Python class
-  definitions needed at inference time).
-- If your Colab export used torch.save(model.state_dict(), ...) instead, replace
-  the loader with the commented-out alternative that reconstructs the architecture
-  first and then loads weights.
+- The current production artifact is a state dict created with
+  torch.save(model.state_dict(), ...), so the matching architecture is
+  reconstructed before loading the weights.
 - The model is pinned to CPU by default. If the container has a GPU, change
   DEVICE to "cuda" and rebuild the image with the CUDA base.
 - model.eval() and torch.inference_mode() are applied to disable dropout /
@@ -39,7 +36,7 @@ _model_device: Optional[torch.device] = None
 
 def load_model() -> None:
     """
-    Load the TorchScript model from disk into the global singleton.
+    Load the state-dict model from disk into the global singleton.
     Idempotent: safe to call multiple times (no-op after first successful load).
     Must be called from the FastAPI lifespan startup handler.
     """
@@ -78,7 +75,19 @@ def load_model() -> None:
                     "Model file did not contain a state_dict for SiameseNineNet."
                 )
 
-            model = SiameseNineNet()
+            try:
+                hidden_dim = int(state_dict["backbone.fc_layers.1.weight"].shape[0])
+                embedding_dim = int(state_dict["backbone.fc_layers.4.weight"].shape[0])
+            except (KeyError, IndexError, AttributeError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Model state_dict is missing the expected SiameseNineNet "
+                    "fully connected layer weights."
+                ) from exc
+
+            model = SiameseNineNet(
+                hidden_dim=hidden_dim,
+                embedding_dim=embedding_dim,
+            )
             model.load_state_dict(state_dict)
             
             # Explicitly move model and all parameters to target device

@@ -21,6 +21,7 @@ class ProcessResponse(BaseModel):
     confidence_forged   : Probability (0–100) that the signature is forged.
     distance            : Raw embedding distance produced by the Siamese network.
     threshold           : Distance threshold used for this inference run.
+    review_recommended  : Borderline zone flag (GENUINE verdict, examiner review recommended).
     gradcam_blob_ids    : Blob IDs of the uploaded Grad-CAM visualization images.
     uploaded_blobs_ids   : Compatibility alias for callers that expect the older name.
     """
@@ -40,6 +41,14 @@ class ProcessResponse(BaseModel):
     )
     threshold: float = Field(
         ..., ge=0.0, description="Decision threshold applied during this inference."
+    )
+    review_recommended: bool = Field(
+        False,
+        description=(
+            "True when the distance falls in the validation-derived borderline zone "
+            "(REVIEW_LOWER_THRESHOLD <= distance < threshold). The verdict is still GENUINE; "
+            "the case should be reviewed by an examiner."
+        ),
     )
     gradcam_blob_ids: List[str] = Field(
         ..., description="Blob IDs of the Grad-CAM visualization images uploaded to Azure Blob Storage."
@@ -63,6 +72,7 @@ class ProcessResponse(BaseModel):
             "confidence_forged": 5.75,
             "distance": 0.214562,
             "threshold": 0.6851,
+            "review_recommended": False,
             "gradcam_blob_ids": ["gradcam-output/case-001/query_case-001_original.png"],
             "uploaded_blobs_ids": ["gradcam-output/case-001/query_case-001_original.png"],
         }

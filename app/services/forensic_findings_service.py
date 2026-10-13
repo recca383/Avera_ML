@@ -54,6 +54,19 @@ THRESHOLDS = {
 }
 
 
+# ── Decision zones (F5, report headline, API review flag) ─────────────────────
+def f5_zone(distance: float, threshold: float, review_lower: float) -> str:
+    """
+    "genuine" (d < review_lower), "borderline" (review_lower <= d < threshold) or
+    "forged" (d >= threshold). The forged zone is exactly the FORGED verdict, so
+    the zone never contradicts it; "borderline" only marks a GENUINE verdict for
+    examiner review. See REVIEW_LOWER_THRESHOLD in app/core/config.py.
+    """
+    if distance >= threshold:
+        return "forged"
+    return "borderline" if distance >= review_lower else "genuine"
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _to_gray(img: Image.Image | np.ndarray) -> np.ndarray:
     if isinstance(img, Image.Image):
@@ -230,8 +243,11 @@ def _plain_sentences(
 
     if not math.isfinite(pct):
         f5 = "The AI model's distance could not be compared with its limit."
-    elif f5_label in ("Well within threshold", "Within threshold"):
+    elif f5_label == "Well within threshold":
         f5 = f"The AI model sees this signature as close to the references: {pct:.0f}% of the way to its limit."
+    elif f5_label == "Borderline":
+        f5 = (f"The AI model puts this signature just under its limit ({pct:.0f}% of it), in the borderline "
+              f"zone where an examiner should review the case.")
     else:
         f5 = f"The AI model sees this signature as far from the references: {pct:.0f}% of its limit."
 
@@ -263,6 +279,7 @@ def compute_forensic_findings(
     questioned_embedding: Optional[np.ndarray],
     distance: float,
     threshold: float,
+    review_lower: Optional[float] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Compute F1-F7.
@@ -270,7 +287,12 @@ def compute_forensic_findings(
     reference_embeddings : (N, D) L2-normalised, from embed_tensors(); may be None
     questioned_embedding : (D,)  L2-normalised; may be None
     distance / threshold : the verdict distance and the EER threshold
+    review_lower         : lower edge of the F5 borderline zone; defaults to
+                           settings.REVIEW_LOWER_THRESHOLD
     """
+    if review_lower is None:
+        from app.core.config import get_settings
+        review_lower = get_settings().REVIEW_LOWER_THRESHOLD
     T = THRESHOLDS
     refs = [_to_gray(r) for r in reference_images]
     q = _to_gray(questioned_image)
@@ -344,11 +366,13 @@ def compute_forensic_findings(
 
     # ---- F5 Variation (model distance vs. threshold) ---------------------------
     pct = 100.0 * distance / threshold if threshold > 0 else float("inf")
-    # "Within" uses the same strict test as the verdict (GENUINE iff distance < threshold).
-    if pct <= 75:
+    # Below the threshold the bands follow the validation zones (f5_zone), so
+    # "Exceeds" starts exactly where the verdict turns FORGED (distance >= threshold).
+    zone = f5_zone(distance, threshold, review_lower)
+    if zone == "genuine":
         f5_label = "Well within threshold"
-    elif distance < threshold:
-        f5_label = "Within threshold"
+    elif zone == "borderline":
+        f5_label = "Borderline"
     elif pct <= 150:
         f5_label = "Exceeds threshold"
     else:
@@ -356,7 +380,8 @@ def compute_forensic_findings(
     f5_obs = (
         f"The model measured a distance of {distance:.4f} between the questioned signature and the "
         f"combined references. The decision threshold is {threshold:.4f}. A distance above the threshold "
-        f"is read as a different writer; here it is {_fmt(pct, 0)}% of the threshold."
+        f"is read as a different writer; here it is {_fmt(pct, 0)}% of the threshold. Distances from "
+        f"{review_lower:.4f} up to the threshold form the borderline zone, where examiner review is recommended."
     )
 
     # ---- F6 Natural variation range (writer's own spread) ----------------------
@@ -433,7 +458,7 @@ def compute_forensic_findings(
                "ok_lo": ref_mean_var / T["curvature_ratio"], "ok_hi": ref_mean_var * T["curvature_ratio"]},
         "f4": {"q": q4["ratio"], "min": float(min(r_ratios)), "max": float(max(r_ratios)), "mean": r_ratio,
                "ok_lo": r_ratio * (1 - T["ratio_tolerance"]), "ok_hi": r_ratio * (1 + T["ratio_tolerance"])},
-        "f5": {"distance": float(distance), "threshold": float(threshold)},
+        "f5": {"distance": float(distance), "threshold": float(threshold), "review_lower": float(review_lower)},
         "f6": {"q": q_to_ref, "min": f6_min, "max": f6_max, "mean": f6_mean,
                "ok_lo": 0.0 if f6_ok_hi is not None else None, "ok_hi": f6_ok_hi,
                "pairs": pair if f6_max is not None else []},

@@ -962,6 +962,7 @@ def export_compiled_pdf(
     model_version_tag: str = "AVERA SNN",
     forensic_findings: Optional[dict] = None,
     finding_visuals: Optional[dict] = None,
+    review_lower: Optional[float] = None,
 ) -> str:
     """
     Assemble the compiled report PDF (Letter, Sora, AVERA brand colour):
@@ -973,7 +974,10 @@ def export_compiled_pdf(
     `forensic_findings` is the dict from forensic_findings_service.compute_forensic_findings.
     `finding_visuals` is the dict from finding_visuals.build_finding_visuals (optional;
     cards fall back to numbers only without it).
+    `review_lower` is the borderline-zone lower edge (default settings.REVIEW_LOWER_THRESHOLD).
     """
+    if review_lower is None:
+        review_lower = get_settings().REVIEW_LOWER_THRESHOLD
     os.makedirs(results_dir, exist_ok=True)
     compiled_pdf_path = os.path.join(results_dir, f"output.pdf")
     image_labels = ["Reference 1", "Reference 2", "Reference 3", "Reference 4", "QUESTIONED"]
@@ -989,9 +993,10 @@ def export_compiled_pdf(
 
     with PdfPages(compiled_pdf_path) as pdf:
         rp.page_cover(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, conf_forged,
-                      avg_distance, threshold, query_image_name, ref_image_names, model_version_tag)
+                      avg_distance, threshold, query_image_name, ref_image_names, model_version_tag,
+                      review_lower)
         rp.page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance, threshold,
-                        forensic_findings)
+                        forensic_findings, review_lower)
         for i, codes in enumerate(findings_pages):
             rp.page_findings(pdf, page_counter, total_pages, case_id, forensic_findings, codes,
                              visuals=finding_visuals, first=i == 0, last=i == len(findings_pages) - 1)
@@ -1032,7 +1037,7 @@ def export_compiled_pdf(
             rows_per_page=rows_per_page_stroke_table,
         )
 
-        rp.page_explanation(pdf, page_counter, total_pages, case_id)
+        rp.page_explanation(pdf, page_counter, total_pages, case_id, threshold, review_lower)
         rp.page_disclaimer(pdf, page_counter, total_pages, case_id)
 
     logger.info("Compiled PDF saved", path=compiled_pdf_path, pages_written=page_counter[0])
@@ -1364,6 +1369,7 @@ class GradCAMService:
             model_version_tag=model_version_tag,
             forensic_findings=forensic_findings,
             finding_visuals=finding_visuals,
+            review_lower=self._settings.REVIEW_LOWER_THRESHOLD,
         )
 
         exported_files.append(pdf_path)
@@ -1413,6 +1419,7 @@ class GradCAMService:
                 questioned_embedding=q_emb,
                 distance=distance,
                 threshold=threshold,
+                review_lower=self._settings.REVIEW_LOWER_THRESHOLD,
             )
             logger.info(
                 "Forensic findings computed",

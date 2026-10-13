@@ -9,7 +9,8 @@ Design rules
 * Status colours are used sparingly (green = consistent, amber = differs,
   red = far outside), always alongside a text label, never colour alone.
 
-This module never imports gradcam_service (no circular import).
+This module never imports gradcam_service (no circular import); from
+forensic_findings_service it uses only the f5_zone rule.
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
 from matplotlib.lines import Line2D
 from matplotlib.patches import Ellipse, Polygon, Rectangle
+
+from app.services.forensic_findings_service import f5_zone
 
 # ── Design tokens ─────────────────────────────────────────────────────────────
 def _pick_font() -> List[str]:
@@ -69,6 +72,7 @@ WARN = "#B45309"
 BAD = "#B91C1C"
 NA = "#6B7280"
 OK_FILL = "#E8F3EC"
+WARN_FILL = "#FBF0DF"
 BAD_FILL = "#FBEAEA"
 
 VERDICT_LABELS = {"GENUINE": "GENUINE", "FORGED": "SUSPECTED"}
@@ -100,7 +104,8 @@ FINDING_EXPLAIN = {
           "which is common when someone copies another person's signature.",
     "f4": "Compares the overall shape and proportions of the signature: how wide it is compared with how tall it is.",
     "f5": "Shows how different the questioned signature is from the references according to the AI model, "
-          "measured against the model's decision limit (the threshold).",
+          "measured against the model's decision limit (the threshold). Distances just below the threshold "
+          "fall in the borderline zone, where the result should be reviewed by an examiner.",
     "f6": "No one signs exactly the same way twice. This compares the questioned signature with how much the "
           "writer's own genuine signatures vary from one another.",
     "f7": "Estimates pen pressure from ink darkness and how evenly the line width changes. Pressure cannot be "
@@ -117,7 +122,7 @@ FINDING_SHORT = {
     "f7": "Estimated pen pressure from ink darkness.",
 }
 
-_OK_LABELS = {"Consistent", "Well within threshold", "Within threshold", "Within natural range"}
+_OK_LABELS = {"Consistent", "Well within threshold", "Within natural range"}
 _BAD_LABELS = {"Far exceeds threshold"}
 
 
@@ -133,6 +138,22 @@ def label_color(label: str) -> str:
 
 def verdict_color(verdict: str) -> str:
     return OK if verdict == "GENUINE" else BAD
+
+
+BORDERLINE_HEADLINE = "BORDERLINE \u2014 EXAMINER REVIEW RECOMMENDED"
+
+
+def borderline_subline(verdict: str, distance: float, threshold: float,
+                       review_lower: Optional[float]) -> Optional[str]:
+    """The borderline subline when a GENUINE verdict falls in the review zone, else None."""
+    if verdict != "GENUINE" or review_lower is None or f5_zone(distance, threshold, review_lower) != "borderline":
+        return None
+    return (f"Model verdict: genuine (distance below the {threshold:.4f} threshold), but within the "
+            f"validation-defined borderline zone ({review_lower:.4f}\u2013{threshold:.4f})")
+
+
+def _fit_size(s: str, width_in: float, sizes: Tuple[float, ...]) -> float:
+    return next((z for z in sizes if text_width_pt(s, z, "bold") / 72.0 <= width_in), sizes[-1])
 
 
 # ── Low-level drawing helpers (figure-fraction coordinates) ───────────────────
@@ -292,18 +313,29 @@ def _finish(fig, pdf, page_counter, total_pages, case_id) -> None:
 
 
 # ── Visual components ─────────────────────────────────────────────────────────
-def distance_gauge(fig, x, y, w, distance: float, threshold: float, color: str, show_zones=True) -> None:
-    """Track split at the threshold with labels kept outside the bar."""
+def distance_gauge(fig, x, y, w, distance: float, threshold: float, color: str, show_zones=True,
+                   review_lower: Optional[float] = None) -> None:
+    """
+    Track split at the threshold with labels kept outside the bar. With
+    `review_lower`, the stretch from it up to the threshold is drawn as the
+    amber borderline zone.
+    """
     W, H = _size(fig)
     dom = max(threshold * 1.6, distance * 1.15, 1e-6)
     th = 0.17 / H                                     # track height (fraction)
     tx = x + w * (threshold / dom)
-    rect(fig, x, y - th / 2, tx - x, th, OK_FILL, BORDER, 0.8)
+    lx = x + w * (review_lower / dom) if review_lower is not None and 0 < review_lower < threshold else tx
+    rect(fig, x, y - th / 2, lx - x, th, OK_FILL, BORDER, 0.8)
+    if lx < tx:
+        rect(fig, lx, y - th / 2, tx - lx, th, WARN_FILL, BORDER, 0.8)
     rect(fig, tx, y - th / 2, x + w - tx, th, BAD_FILL, BORDER, 0.8)
     if show_zones:
-        if (tx - x) * W > 1.0:
-            text(fig, (x + tx) / 2, y - th / 2 - 0.10 / H, "Same writer",
+        if (lx - x) * W > 1.0:
+            text(fig, (x + lx) / 2, y - th / 2 - 0.10 / H, "Same writer",
                  TYPE_LABEL, OK, ha="center", va="top")
+        if (tx - lx) * W > 0.55:
+            text(fig, (lx + tx) / 2, y - th / 2 - 0.10 / H, "Borderline",
+                 TYPE_LABEL, WARN, ha="center", va="top")
         if (x + w - tx) * W > 1.1:
             text(fig, (tx + x + w) / 2, y - th / 2 - 0.10 / H, "Different writer",
                  TYPE_LABEL, BAD, ha="center", va="top")
@@ -393,13 +425,20 @@ DEV_MAX = 3.0   # deviation tracks run from 0 (typical) to 3x the edge of normal
 DEV_LABEL_IN = 0.42   # room to the right of a track for an off-scale label such as "12.5×"
 
 
-def deviation_track(fig, x, y, w, dev: Optional[float], color: str) -> None:
-    """0 = typical for this writer, 1 = edge of normal (green zone), beyond = outside normal."""
+def deviation_track(fig, x, y, w, dev: Optional[float], color: str,
+                    warn_from: Optional[float] = None) -> None:
+    """
+    0 = typical for this writer, 1 = edge of normal (green zone), beyond = outside normal.
+    `warn_from` (0-1) draws the stretch from it up to the edge in amber (F5 borderline zone).
+    """
     W, H = _size(fig)
     th = 0.14 / H
     edge = x + w / DEV_MAX
     rect(fig, x, y - th / 2, w, th, SURFACE, BORDER, 0.8)
     rect(fig, x, y - th / 2, edge - x, th, OK_FILL, BORDER, 0.8)
+    if warn_from is not None and 0 < warn_from < 1:
+        wx = x + w * warn_from / DEV_MAX
+        rect(fig, wx, y - th / 2, edge - wx, th, WARN_FILL, BORDER, 0.8)
     vline(fig, edge, y - th / 2 - 0.04 / H, y + th / 2 + 0.04 / H, OK, 1.2, z=3)
     if dev is None:
         text(fig, x + w / 2, y, "Not available", 7, MUTED, ha="center", va="center")
@@ -453,10 +492,12 @@ def image_cell(fig, x, y_top, w_in, h_in, img, label: str, caption: str, label_c
 
 # ── Cover page ────────────────────────────────────────────────────────────────
 def page_cover(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, conf_forged,
-               avg_distance, threshold, query_image_name, ref_image_names, model_version_tag) -> None:
+               avg_distance, threshold, query_image_name, ref_image_names, model_version_tag,
+               review_lower: Optional[float] = None) -> None:
     W, H = PAGE_W, PAGE_H
     fig = plt.figure(figsize=(W, H), facecolor=WHITE)
-    vcol = verdict_color(verdict)
+    subline = borderline_subline(verdict, avg_distance, threshold, review_lower)
+    vcol = WARN if subline else verdict_color(verdict)
 
     rect(fig, 0, 0.80, 1, 0.20, BRAND)
     text(fig, MX, 0.915, "AVERA", 38, WHITE, "bold", va="center")
@@ -470,12 +511,20 @@ def page_cover(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, c
     # Verdict card: the confidence line sits under the body text and the card grows to fit it.
     top = 0.665
     text(fig, MX + 0.03, top - 0.030, "MODEL RESULT", 8, MUTED, "bold", va="center")
-    text(fig, MX + 0.03, top - 0.078, VERDICT_LABELS.get(verdict, verdict), 26, vcol, "bold", va="center")
-    text(fig, MX + 0.03, top - 0.103, VERDICT_SUBTITLES.get(verdict, ""), 9, TEXT, va="center")
     body = (f"The model measured a distance of {avg_distance:.4f} between the questioned signature and the "
             f"reference signatures. The decision threshold is {threshold:.4f}. "
             f"A distance above the threshold is read as a different writer.")
-    body_bottom = para(fig, MX + 0.03, top - 0.130, body, CONTENT_W * W - 0.6, 9, TEXT)
+    if subline:
+        # Same wording as the Case Summary; the subline wraps, so the body follows it.
+        size = _fit_size(BORDERLINE_HEADLINE, CONTENT_W * W - 0.6, (22, 20, 18, 16))
+        text(fig, MX + 0.03, top - 0.064, BORDERLINE_HEADLINE, size, vcol, "bold", va="center")
+        sub_bottom = para(fig, MX + 0.03, top - 0.083, subline, CONTENT_W * W - 0.6, 9, TEXT, weight="bold")
+        body += " A result in the borderline zone should be reviewed by a qualified document examiner."
+        body_bottom = para(fig, MX + 0.03, sub_bottom - 0.010, body, CONTENT_W * W - 0.6, 9, TEXT)
+    else:
+        text(fig, MX + 0.03, top - 0.078, VERDICT_LABELS.get(verdict, verdict), 26, vcol, "bold", va="center")
+        text(fig, MX + 0.03, top - 0.103, VERDICT_SUBTITLES.get(verdict, ""), 9, TEXT, va="center")
+        body_bottom = para(fig, MX + 0.03, top - 0.130, body, CONTENT_W * W - 0.6, 9, TEXT)
     conf_y = body_bottom - 0.012
     text(fig, MX + 0.03, conf_y,
          f"Model confidence score: {conf_genuine:.1f}% same writer / {conf_forged:.1f}% different writer "
@@ -523,26 +572,43 @@ def _support_stats(key_findings: Dict[str, str]) -> Tuple[int, int]:
 
 
 def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance, threshold,
-                 findings: Optional[dict]) -> None:
+                 findings: Optional[dict], review_lower: Optional[float] = None) -> None:
     W, H = PAGE_W, PAGE_H
     findings = findings or {}
     key = findings.get("key_findings", {})
     fig = _new_page(case_id, "Case Summary")
     y = page_title(fig, "Case Summary", "The model result, supporting checks and key findings at a glance")
-    vcol = verdict_color(verdict)
+    # The verdict stays GENUINE in the borderline zone; only the headline changes.
+    subline = borderline_subline(verdict, avg_distance, threshold, review_lower)
+    vcol = WARN if subline else verdict_color(verdict)
 
     # Model result card (grows with its note so the text always stays inside)
     pct = 100.0 * avg_distance / threshold if threshold > 0 else 0.0
     note = f"Distance is {pct:.0f}% of the threshold. Lower distance means more similar signatures."
     note_w = (0.42 - MX - 0.02) * W - 0.25          # up to the gauge, with a gap
-    ch = max(1.45, 0.90 + para_height_in(note, note_w, 8.5) + 0.14) / H
     top = y
-    rect(fig, MX, top - ch, CONTENT_W, ch, WHITE, BORDER, 1.0)
-    text(fig, MX + 0.02, top - 0.20 / H, "MODEL RESULT", 8, MUTED, "bold", va="center")
-    text(fig, MX + 0.02, top - 0.55 / H, VERDICT_LABELS.get(verdict, verdict), 22, vcol, "bold", va="center")
-    text(fig, MX + 0.02, top - 0.76 / H, VERDICT_SUBTITLES.get(verdict, ""), 8.5, TEXT, va="center")
-    para(fig, MX + 0.02, top - 0.90 / H, note, note_w, 8.5, MUTED)
-    distance_gauge(fig, 0.42, top - 0.72 / H, 0.47, avg_distance, threshold, vcol)
+    if subline:
+        # The long headline spans the card; subline and note sit left of the gauge below it.
+        headline = BORDERLINE_HEADLINE
+        size = _fit_size(headline, CONTENT_W * W - 0.3, (20, 18, 16, 14))
+        sub_h = para_height_in(subline, note_w, 8.5)
+        ch = max(1.90, 0.80 + sub_h + 0.06 + para_height_in(note, note_w, 8.5) + 0.14) / H
+        rect(fig, MX, top - ch, CONTENT_W, ch, WHITE, WARN, 1.4)
+        text(fig, MX + 0.02, top - 0.20 / H, "MODEL RESULT", 8, MUTED, "bold", va="center")
+        text(fig, MX + 0.02, top - 0.52 / H, headline, size, vcol, "bold", va="center")
+        sub_bottom = para(fig, MX + 0.02, top - 0.80 / H, subline, note_w, 8.5, TEXT)
+        para(fig, MX + 0.02, sub_bottom - 0.06 / H, note, note_w, 8.5, MUTED)
+        distance_gauge(fig, 0.42, top - 1.30 / H, 0.47, avg_distance, threshold, vcol,
+                       review_lower=review_lower)
+    else:
+        ch = max(1.45, 0.90 + para_height_in(note, note_w, 8.5) + 0.14) / H
+        rect(fig, MX, top - ch, CONTENT_W, ch, WHITE, BORDER, 1.0)
+        text(fig, MX + 0.02, top - 0.20 / H, "MODEL RESULT", 8, MUTED, "bold", va="center")
+        text(fig, MX + 0.02, top - 0.55 / H, VERDICT_LABELS.get(verdict, verdict), 22, vcol, "bold", va="center")
+        text(fig, MX + 0.02, top - 0.76 / H, VERDICT_SUBTITLES.get(verdict, ""), 8.5, TEXT, va="center")
+        para(fig, MX + 0.02, top - 0.90 / H, note, note_w, 8.5, MUTED)
+        distance_gauge(fig, 0.42, top - 0.72 / H, 0.47, avg_distance, threshold, vcol,
+                       review_lower=review_lower)
     y = top - ch - 0.22 / H
 
     # Supporting checks headline
@@ -603,7 +669,7 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
     # Fit the page: everything below the table must stay above the footer. Rows
     # shrink first, then the "In plain words" type, then the closing line goes.
     notes = ("Distance from normal: 0 is typical for this writer and the green zone is the normal range "
-             "(for F5, the model's threshold). Aid strength: how well each check told genuine from forged "
+             "(for F5, the model's threshold, with the borderline zone in amber). Aid strength: how well each check told genuine from forged "
              "signatures in testing; the strongest checks deserve the most weight.")
     plain = findings.get("plain", {}) or {}
     order = [c for c in sorted(FINDING_ORDER, key=lambda c: (c != "f5", -(strength(c) or (0,))[0]))
@@ -631,7 +697,8 @@ def page_summary(pdf, page_counter, total_pages, case_id, verdict, avg_distance,
         chip(fig, cols["chip"], yc, lab, col, size=7.5, align="left")
         strength_badge(fig, cols["str"], yc, code, suffix="", size=7.5)
         dev = deviation.get(code)
-        deviation_track(fig, cols["track"], yc, track_w, None if lab == "N/A" else dev, col)
+        warn_from = review_lower / threshold if code == "f5" and review_lower is not None and threshold > 0 else None
+        deviation_track(fig, cols["track"], yc, track_w, None if lab == "N/A" else dev, col, warn_from)
         y -= rh
         hline(fig, MX, 1 - MX, y, BORDER, 0.8)
 
@@ -731,7 +798,8 @@ def _draw_numbers(fig, code: str, x: float, top: float, w_in: float, ranges: dic
     elif code == "f5":
         r = ranges.get("f5") or {}
         if r:
-            distance_gauge(fig, x, top - 0.50 / H, w, r["distance"], r["threshold"], col)
+            distance_gauge(fig, x, top - 0.50 / H, w, r["distance"], r["threshold"], col,
+                           review_lower=r.get("review_lower"))
     elif code == "f6":
         r = ranges.get("f6") or {}
         dot_strip(fig, x, top - 0.42 / H, w, r.get("pairs") or [], r.get("q"), r.get("ok_hi"), col)
@@ -861,7 +929,18 @@ def page_findings(pdf, page_counter, total_pages, case_id, findings: Optional[di
 
 
 # ── Explanation + glossary ────────────────────────────────────────────────────
-def page_explanation(pdf, page_counter, total_pages, case_id) -> None:
+def _borderline_explanation(threshold: Optional[float], review_lower: Optional[float]) -> str:
+    # The rates are the Pipeline 32 test-split figures for REVIEW_LOWER_THRESHOLD = 0.4835
+    # (see app/core/config.py); update them together if the zone is recalibrated.
+    if threshold is None or review_lower is None or not 0 < review_lower < threshold:
+        return ""
+    return (f" Distances from {review_lower:.4f} up to the threshold are borderline (set on validation data "
+            f"where 1 in 10 forgeries is accepted; in testing it held 32.9% of genuine signatures and 10.7% "
+            f"of forgeries): the verdict stays genuine, but an examiner should review the case.")
+
+
+def page_explanation(pdf, page_counter, total_pages, case_id, threshold: Optional[float] = None,
+                     review_lower: Optional[float] = None) -> None:
     W, H = PAGE_W, PAGE_H
     fig = _new_page(case_id, "Understanding This Report")
     y = page_title(fig, "Understanding This Report", "A plain-language guide to the results")
@@ -875,7 +954,7 @@ def page_explanation(pdf, page_counter, total_pages, case_id) -> None:
          "The result is based only on the model's distance (F5). If the distance is below the decision "
          "threshold, AVERA reads the signatures as written by the same person. The threshold was set during "
          "testing at the point where wrongly accepted and wrongly rejected signatures were equally common, so "
-         "results close to the threshold are less certain."),
+         "results close to the threshold are less certain." + _borderline_explanation(threshold, review_lower)),
         ("What the supporting checks are",
          "F1 to F4 and F7 use classical image measurements, the way an examiner might compare shape, slope, "
          "smoothness and ink. F6 uses the model to compare the questioned signature with the writer's own "

@@ -23,11 +23,13 @@ from typing import Annotated, List
 import torch
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.security import verify_internal_api_key
 from app.models.request_models import ProcessRequest
 from app.models.response_models import ProcessResponse
 from app.services.blob_service import BlobStorageService, get_blob_storage_service
+from app.services.forensic_findings_service import f5_zone
 from app.services.gradcam_service import GradCAMService, get_gradcam_service
 from app.services.inference_service import InferenceService, get_inference_service
 from app.services.preprocessing_service import PreprocessingService, get_preprocessing_service
@@ -178,6 +180,7 @@ async def process(
         confidence_forged=conf_forged,
         distance=distance,
         threshold=threshold,
+        review_recommended=f5_zone(distance, threshold, get_settings().REVIEW_LOWER_THRESHOLD) == "borderline",
         gradcam_blob_ids=gradcam_blob_ids,
     )
 

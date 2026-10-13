@@ -31,6 +31,14 @@ class SettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.INFERENCE_THRESHOLD, 0.6851)
 
+    def test_review_lower_threshold_default_is_validation_far10(self):
+        env = _env_without("REVIEW_LOWER_THRESHOLD")
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings(_env_file=None)
+
+        self.assertEqual(settings.REVIEW_LOWER_THRESHOLD, 0.4835)
+        self.assertLess(settings.REVIEW_LOWER_THRESHOLD, settings.INFERENCE_THRESHOLD)
+
 
 if __name__ == "__main__":
     unittest.main()

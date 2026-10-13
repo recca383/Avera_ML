@@ -278,6 +278,7 @@ az containerapp update \
 | `AZURE_STORAGE_CONTAINER` | ✅ | — | Blob container name |
 | `MODEL_PATH` | | `app/ml/exported_model/siamese_signature_model.pt` | Path to the Siamese state-dict model |
 | `INFERENCE_THRESHOLD` | | `0.6851` | Distance threshold for GENUINE/FORGED classification (Pipeline 32 validation 4:1 EER) |
+| `REVIEW_LOWER_THRESHOLD` | | `0.4835` | Lower edge of the borderline zone (validation 4:1 FAR 10% point). `0.4835 ≤ d < 0.6851` keeps the GENUINE verdict but sets `review_recommended` and the report reads "Borderline — examiner review recommended". Test split: genuine zone 57.9% of genuine / 4.4% of forgeries; borderline 32.9% / 10.7%; forged zone 9.2% / 84.9% |
 | `ENVIRONMENT` | | `production` | `development` / `staging` / `production` |
 | `LOG_LEVEL` | | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `LOG_FORMAT` | | `json` | `json` (production) or `text` (development) |

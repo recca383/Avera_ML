@@ -13,7 +13,7 @@ import unittest
 import cv2
 import numpy as np
 
-from app.services.forensic_findings_service import compute_forensic_findings
+from app.services.forensic_findings_service import compute_forensic_findings, f5_zone
 
 CONSISTENT = {"Consistent", "Within natural range"}
 
@@ -67,25 +67,50 @@ class DeviationMatchesLabelTest(unittest.TestCase):
 
 
 class F5MatchesVerdictTest(unittest.TestCase):
-    """F5 reads as within the threshold exactly when the verdict is GENUINE (distance < threshold)."""
+    """
+    F5 follows the validation zones: "Well within" below REVIEW_LOWER, "Borderline"
+    up to the threshold, and "Exceeds" exactly when the verdict is FORGED (distance >= threshold).
+    """
 
-    def test_f5_bands(self) -> None:
+    T, LOWER = 0.6851, 0.4835
+    BELOW_THRESHOLD = {"Well within threshold", "Borderline"}
+
+    def _f5(self, distance: float) -> dict:
         refs = [_signature(s) for s in range(4)]
-        q = _signature(10)
-        t = 0.6851
-        cases = {
-            0.50 * t: "Well within threshold",
-            0.90 * t: "Within threshold",
-            t: "Exceeds threshold",            # verdict is FORGED at distance == threshold
-            1.40 * t: "Exceeds threshold",
-            1.60 * t: "Far exceeds threshold",
-        }
-        for distance, expected in cases.items():
+        return compute_forensic_findings(refs, _signature(10), None, None, distance=distance,
+                                         threshold=self.T, review_lower=self.LOWER)
+
+    def test_f5_bands_and_boundaries(self) -> None:
+        t, lo = self.T, self.LOWER
+        cases = [
+            (0.10, "Well within threshold"),
+            (lo - 1e-6, "Well within threshold"),
+            (lo, "Borderline"),                  # zone is lower-inclusive
+            (0.60, "Borderline"),
+            (t - 1e-6, "Borderline"),
+            (t, "Exceeds threshold"),            # verdict is FORGED at distance == threshold
+            (1.50 * t, "Exceeds threshold"),
+            (1.50 * t + 1e-6, "Far exceeds threshold"),
+        ]
+        for distance, expected in cases:
             with self.subTest(distance=distance):
-                f = compute_forensic_findings(refs, q, None, None, distance=distance, threshold=t)
+                f = self._f5(distance)
                 self.assertEqual(f["key_findings"]["f5_label"], expected)
-                close = "close to the references" in f["plain"]["f5"]
-                self.assertEqual(close, distance < t)
+                self.assertEqual(f5_zone(distance, t, lo),
+                                 {"Well within threshold": "genuine", "Borderline": "borderline"}.get(expected, "forged"))
+                plain = f["plain"]["f5"]
+                self.assertEqual("close to the references" in plain, expected == "Well within threshold")
+                self.assertEqual("borderline zone" in plain, expected == "Borderline")
+                self.assertEqual(f["ranges"]["f5"]["review_lower"], lo)
+
+    def test_f5_bands_agree_with_verdict(self) -> None:
+        # The inference verdict is GENUINE iff distance < threshold; F5 must never contradict it.
+        for distance in np.linspace(0.0, 1.4, 141):
+            verdict = "GENUINE" if distance < self.T else "FORGED"
+            with self.subTest(distance=float(distance)):
+                label = self._f5(float(distance))["key_findings"]["f5_label"]
+                self.assertEqual(label in self.BELOW_THRESHOLD, verdict == "GENUINE")
+                self.assertEqual(f5_zone(float(distance), self.T, self.LOWER) == "forged", verdict == "FORGED")
 
 
 if __name__ == "__main__":

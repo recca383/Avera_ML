@@ -930,13 +930,13 @@ def page_findings(pdf, page_counter, total_pages, case_id, findings: Optional[di
 
 # ── Explanation + glossary ────────────────────────────────────────────────────
 def _borderline_explanation(threshold: Optional[float], review_lower: Optional[float]) -> str:
-    # The rates are the Pipeline 32 test-split figures for REVIEW_LOWER_THRESHOLD = 0.4835
-    # (see app/core/config.py); update them together if the zone is recalibrated.
+    # No test-split rates here: the published ones (config.py) were measured for the
+    # 0.4835-0.6851 zone and do not hold for other thresholds.
     if threshold is None or review_lower is None or not 0 < review_lower < threshold:
         return ""
-    return (f" Distances from {review_lower:.4f} up to the threshold are borderline (set on validation data "
-            f"where 1 in 10 forgeries is accepted; in testing it held 32.9% of genuine signatures and 10.7% "
-            f"of forgeries): the verdict stays genuine, but an examiner should review the case.")
+    return (f" Distances from {review_lower:.4f} up to the threshold are borderline (the lower edge was set on "
+            f"validation data where 1 in 10 forgeries is accepted): the verdict stays genuine, but an "
+            f"examiner should review the case.")
 
 
 def page_explanation(pdf, page_counter, total_pages, case_id, threshold: Optional[float] = None,
@@ -952,9 +952,8 @@ def page_explanation(pdf, page_counter, total_pages, case_id, threshold: Optiona
          "apart they are. A short distance means the signatures are structurally similar."),
         ("How the result is decided",
          "The result is based only on the model's distance (F5). If the distance is below the decision "
-         "threshold, AVERA reads the signatures as written by the same person. The threshold was set during "
-         "testing at the point where wrongly accepted and wrongly rejected signatures were equally common, so "
-         "results close to the threshold are less certain." + _borderline_explanation(threshold, review_lower)),
+         "threshold, AVERA reads the signatures as written by the same person. Results close to the "
+         "threshold are less certain." + _borderline_explanation(threshold, review_lower)),
         ("What the supporting checks are",
          "F1 to F4 and F7 use classical image measurements, the way an examiner might compare shape, slope, "
          "smoothness and ink. F6 uses the model to compare the questioned signature with the writer's own "

@@ -286,7 +286,7 @@ def compute_forensic_findings(
 
     reference_embeddings : (N, D) L2-normalised, from embed_tensors(); may be None
     questioned_embedding : (D,)  L2-normalised; may be None
-    distance / threshold : the verdict distance and the EER threshold
+    distance / threshold : the verdict distance and the decision threshold
     review_lower         : lower edge of the F5 borderline zone; defaults to
                            settings.REVIEW_LOWER_THRESHOLD
     """

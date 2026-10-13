@@ -24,12 +24,12 @@ class SettingsTest(unittest.TestCase):
         self.assertEqual(settings.AZURE_STORAGE_ACCOUNT_URL, "")
         self.assertEqual(settings.AZURE_STORAGE_CONTAINER, "")
 
-    def test_inference_threshold_default_is_pipeline32_eer(self):
+    def test_inference_threshold_default(self):
         env = _env_without("INFERENCE_THRESHOLD")
         with mock.patch.dict(os.environ, env, clear=True):
             settings = Settings(_env_file=None)
 
-        self.assertEqual(settings.INFERENCE_THRESHOLD, 0.6851)
+        self.assertEqual(settings.INFERENCE_THRESHOLD, 0.5208)
 
     def test_review_lower_threshold_default_is_validation_far10(self):
         env = _env_without("REVIEW_LOWER_THRESHOLD")

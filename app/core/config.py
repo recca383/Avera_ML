@@ -61,13 +61,14 @@ class Settings(BaseSettings):
     # ── Model ──────────────────────────────────────────────────────────────────
     MODEL_PATH: str = "app/ml/exported_model/siamese_signature_model.pt"
     MODEL_INPUT_SIZE: int = 224         # expected H=W after preprocessing
-    INFERENCE_THRESHOLD: float = 0.6851  # Pipeline 32 validation 4:1 EER threshold
-    # Lower edge of the borderline zone: the validation 4:1 FAR 10% point.
-    # The verdict is unchanged (GENUINE iff d < INFERENCE_THRESHOLD); the zone only
-    # flags cases for examiner review:
-    #   d < 0.4835           -> genuine zone     (test: 57.9% of genuine / 4.4% of forgeries)
-    #   0.4835 <= d < 0.6851 -> borderline zone  (test: 32.9% of genuine / 10.7% of forgeries)
-    #   d >= 0.6851          -> forged zone      (test:  9.2% of genuine / 84.9% of forgeries)
+    # GENUINE iff d < INFERENCE_THRESHOLD. Was 0.6851 (Pipeline 32 validation 4:1 EER point).
+    INFERENCE_THRESHOLD: float = 0.5208
+    # Lower edge of the borderline zone (validation 4:1 FAR 10% point). Cases with
+    # REVIEW_LOWER_THRESHOLD <= d < INFERENCE_THRESHOLD (now 0.4835-0.5208) keep the
+    # GENUINE verdict but are flagged for examiner review. The zone is inactive while
+    # this value is >= the inference threshold. Test-split rates against the old
+    # 0.6851 threshold: d < 0.4835 held 57.9% of genuine / 4.4% of forgeries;
+    # 0.4835-0.6851 held 32.9% / 10.7%; d >= 0.6851 held 9.2% / 84.9%.
     REVIEW_LOWER_THRESHOLD: float = 0.4835
 
     # ── Grad-CAM ───────────────────────────────────────────────────────────────

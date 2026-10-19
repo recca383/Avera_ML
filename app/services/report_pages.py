@@ -272,7 +272,7 @@ def chrome(fig, case_id: str, section: str = "") -> None:
     W, H = _size(fig)
     rect(fig, 0, 1 - 0.12 / H, 1, 0.12 / H, BRAND)
     text(fig, MX, 1 - 0.42 / H, "AVERA", 11, BRAND, "bold", va="center")
-    text(fig, 1 - MX, 1 - 0.42 / H, f"{section}    Case {case_id}" if section else f"Case {case_id}",
+    text(fig, 1 - MX, 1 - 0.42 / H, f"{section}    {case_id}" if section else case_id,
          8.5, MUTED, ha="right", va="center")
     hline(fig, MX, 1 - MX, 1 - 0.62 / H, BORDER, 0.8)
 
@@ -295,7 +295,7 @@ def footer(fig, page_counter: list, total_pages: Optional[int], case_id: str, ru
     if rule:
         hline(fig, MX, 1 - MX, 0.50 / H, BORDER, 0.8)
     y = 0.28 / H if rule else 0.015
-    text(fig, MX, y, f"AVERA Case {case_id}   |   Confidential: generated for academic/thesis research",
+    text(fig, MX, y, f"AVERA {case_id}   |   Confidential: generated for academic/thesis research",
          7.5, MUTED, va="center")
     text(fig, 1 - MX, y, f"Page {page_counter[0]} of {total_pages}", 7.5, MUTED, ha="right", va="center")
 
@@ -504,7 +504,7 @@ def page_cover(pdf, page_counter, total_pages, case_id, verdict, conf_genuine, c
     text(fig, MX, 0.865, "Automated Verification & Explainable Recognition of Authorship", 10.5, WHITE, va="center")
 
     text(fig, MX, 0.745, "Signature Verification & Forensic Analysis Report", 20, INK, "bold", va="center")
-    text(fig, MX, 0.715, f"Case {case_id}", 12, MUTED, va="center")
+    text(fig, MX, 0.715, case_id, 12, MUTED, va="center")
     rect(fig, MX, 0.700, 0.08, 0.003, BRAND)
 
     # Verdict card
@@ -1029,5 +1029,5 @@ def page_disclaimer(pdf, page_counter, total_pages, case_id) -> None:
         rect(fig, MX + 0.02, yy - 0.24 / H, 0.24 / W, 0.24 / H, BRAND, BRAND, 0.8)
         text(fig, MX + 0.02 + 0.12 / W, yy - 0.12 / H, str(i), 9, WHITE, "bold", ha="center", va="center")
         yy = para(fig, MX + 0.075, yy, t, tw, 9.5, TEXT, spacing=1.5) - 0.20 / H
-    text(fig, 0.5, 0.10, f"AVERA Case {case_id}  -  End of Report", 8.5, MUTED, ha="center", va="center")
+    text(fig, 0.5, 0.10, f"AVERA {case_id}  -  End of Report", 8.5, MUTED, ha="center", va="center")
     _finish(fig, pdf, page_counter, total_pages, case_id)
